@@ -56,6 +56,10 @@ async def main():
     # Устанавливаем бота для периодического обновления
     periodic_updater.set_bot(bot)
     
+    # Устанавливаем бота для менеджера таймеров
+    from utils.timer import auction_timer_manager
+    auction_timer_manager.set_bot(bot)
+    
     # Используем MemoryStorage для FSM
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
@@ -79,7 +83,6 @@ async def main():
     dp.include_router(auction_router)
     
     # Инициализируем планировщик таймеров
-    from utils.timer import auction_timer_manager
     await auction_timer_manager.restore_timers()
     logger.info("Планировщик таймеров запущен")
     
