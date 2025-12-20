@@ -9,7 +9,8 @@ from database.database import get_db
 from database.models import Auction, User, Bid
 from utils.formatters import format_auction_message, format_ended_auction_message
 from keyboards.inline import get_channel_auction_keyboard
-from utils.periodic_updater import periodic_updater  # Добавляем импорт
+from utils.periodic_updater import periodic_updater
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,11 @@ class AuctionTimerManager:
     def __init__(self):
         self.active_timers: Dict[int, asyncio.Task] = {}
         self.lock = asyncio.Lock()
+        self.bot = None  # Добавляем хранение бота
+    
+    def set_bot(self, bot):
+        """Установить бота для таймеров"""
+        self.bot = bot
     
     async def start_auction_timer(self, auction_id: int, ends_at: datetime):
         """Запуск таймера для аукциона"""
@@ -66,89 +72,83 @@ class AuctionTimerManager:
         """Завершение аукциона"""
         try:
             from utils.notifications import send_winner_notification
-            from aiogram import Bot
-            from config import Config
             
-            bot = Bot(token=Config.BOT_TOKEN)
+            if not self.bot:
+                logger.error(f"Бот не установлен для завершения аукциона #{auction_id}")
+                return
             
-            try:
-                async with get_db() as session:
-                    async with session.begin():
-                        # Получаем аукцион
-                        stmt = select(Auction).where(Auction.id == auction_id)
-                        result = await session.execute(stmt)
-                        auction = result.scalar_one_or_none()
-                        
-                        if not auction or auction.status != 'active':
-                            return
-                        
-                        logger.info(f"Завершаю аукцион #{auction_id}")
-                        
-                        # Обновляем статус
-                        auction.status = 'ended'
-                        auction.ended_at = datetime.utcnow()
-                        
-                        # Получаем победителя
-                        stmt_winner = select(Bid).where(
-                            Bid.auction_id == auction_id
-                        ).order_by(desc(Bid.amount)).limit(1)
-                        result_winner = await session.execute(stmt_winner)
-                        winning_bid = result_winner.scalar_one_or_none()
-                        
-                        if winning_bid:
-                            auction.winner_id = winning_bid.user_id
-                            auction.current_price = winning_bid.amount
-                
-                # Получаем данные для обновления сообщения
-                async with get_db() as session:
-                    # Получаем аукцион с победителем
-                    stmt = select(Auction).where(Auction.id == auction_id).options(
-                        selectinload(Auction.winner)
-                    )
+            async with get_db() as session:
+                async with session.begin():
+                    # Получаем аукцион
+                    stmt = select(Auction).where(Auction.id == auction_id)
                     result = await session.execute(stmt)
-                    auction = result.scalar_one()
+                    auction = result.scalar_one_or_none()
                     
-                    # Получаем топ-3 ставки
-                    stmt_top_bids = select(Bid).where(
+                    if not auction or auction.status != 'active':
+                        return
+                    
+                    logger.info(f"Завершаю аукцион #{auction_id}")
+                    
+                    # Обновляем статус
+                    auction.status = 'ended'
+                    auction.ended_at = datetime.utcnow()
+                    
+                    # Получаем победителя
+                    stmt_winner = select(Bid).where(
                         Bid.auction_id == auction_id
-                    ).order_by(desc(Bid.amount)).limit(3).options(
-                        selectinload(Bid.user)
-                    )
-                    result_top = await session.execute(stmt_top_bids)
-                    top_bids = result_top.scalars().all()
+                    ).order_by(desc(Bid.amount)).limit(1)
+                    result_winner = await session.execute(stmt_winner)
+                    winning_bid = result_winner.scalar_one_or_none()
                     
-                    # Получаем количество ставок
-                    stmt_count = select(Bid).where(Bid.auction_id == auction_id).count()
-                    result_count = await session.execute(stmt_count)
-                    bids_count = result_count.scalar()
-                    
-                    # Обновляем сообщение в канале
-                    await self._update_channel_message(bot, auction, top_bids, bids_count)
+                    if winning_bid:
+                        auction.winner_id = winning_bid.user_id
+                        auction.current_price = winning_bid.amount
+            
+            # Получаем данные для обновления сообщения
+            async with get_db() as session:
+                # Получаем аукцион с победителем
+                stmt = select(Auction).where(Auction.id == auction_id).options(
+                    selectinload(Auction.winner)
+                )
+                result = await session.execute(stmt)
+                auction = result.scalar_one()
                 
-                # Уведомляем победителя
-                if winning_bid:
-                    await self._notify_winner(auction_id, winning_bid.user_id, bot)
+                # Получаем топ-3 ставки
+                stmt_top_bids = select(Bid).where(
+                    Bid.auction_id == auction_id
+                ).order_by(desc(Bid.amount)).limit(3).options(
+                    selectinload(Bid.user)
+                )
+                result_top = await session.execute(stmt_top_bids)
+                top_bids = result_top.scalars().all()
                 
-                logger.info(f"Аукцион #{auction_id} завершен, сообщение в канале обновлено")
+                # Получаем количество ставок
+                stmt_count = select(Bid).where(Bid.auction_id == auction_id).count()
+                result_count = await session.execute(stmt_count)
+                bids_count = result_count.scalar()
                 
-            finally:
-                await bot.session.close()
+                # Обновляем сообщение в канале
+                await self._update_channel_message(auction, top_bids, bids_count)
+            
+            # Уведомляем победителя
+            if winning_bid:
+                await self._notify_winner(auction_id, winning_bid.user_id)
+            
+            logger.info(f"Аукцион #{auction_id} завершен, сообщение в канале обновлено")
             
         except Exception as e:
             logger.error(f"Ошибка при завершении аукциона #{auction_id}: {e}", exc_info=True)
     
-    async def _update_channel_message(self, bot, auction: Auction, top_bids=None, bids_count=0):
+    async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
         """Обновление сообщения в канале после завершения аукциона"""
         try:
-            from config import Config
-            
             # Формируем сообщение о завершенном аукционе
             message_text = format_ended_auction_message(auction, top_bids, bids_count)
             
             # Обновляем сообщение в канале (без клавиатуры)
             try:
                 # Сначала пробуем обновить подпись (если было фото)
-                await bot.edit_message_caption(
+                await self.bot.edit_message_caption(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
                     caption=message_text,
@@ -156,7 +156,7 @@ class AuctionTimerManager:
                 )
             except:
                 # Если не получилось (например, сообщение без фото), обновляем текст
-                await bot.edit_message_text(
+                await self.bot.edit_message_text(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
                     text=message_text,
@@ -168,39 +168,27 @@ class AuctionTimerManager:
         except Exception as e:
             logger.error(f"Ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}")
     
-    async def _notify_winner(self, auction_id: int, winner_user_id: int, bot=None):
+    async def _notify_winner(self, auction_id: int, winner_user_id: int):
         """Уведомление победителя"""
         try:
             from utils.notifications import send_winner_notification
             
-            if not bot:
-                from aiogram import Bot
-                from config import Config
-                bot = Bot(token=Config.BOT_TOKEN)
-                use_temp_bot = True
-            else:
-                use_temp_bot = False
-            
-            try:
-                async with get_db() as session:
-                    stmt = select(Auction).where(Auction.id == auction_id)
-                    result = await session.execute(stmt)
-                    auction = result.scalar_one_or_none()
-                    
-                    if not auction:
-                        return
-                    
-                    stmt_user = select(User).where(User.id == winner_user_id)
-                    result_user = await session.execute(stmt_user)
-                    winner = result_user.scalar_one_or_none()
-                    
-                    if not winner:
-                        return
-                    
-                    await send_winner_notification(bot, auction, winner)
-            finally:
-                if use_temp_bot:
-                    await bot.session.close()
+            async with get_db() as session:
+                stmt = select(Auction).where(Auction.id == auction_id)
+                result = await session.execute(stmt)
+                auction = result.scalar_one_or_none()
+                
+                if not auction:
+                    return
+                
+                stmt_user = select(User).where(User.id == winner_user_id)
+                result_user = await session.execute(stmt_user)
+                winner = result_user.scalar_one_or_none()
+                
+                if not winner:
+                    return
+                
+                await send_winner_notification(self.bot, auction, winner)
                     
         except Exception as e:
             logger.error(f"Ошибка при уведомлении победителя: {e}")
