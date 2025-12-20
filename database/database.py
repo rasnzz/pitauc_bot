@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from config import Config
@@ -37,11 +38,12 @@ async def init_db():
     
     # Настраиваем SQLite для многопользовательской работы
     async with engine.connect() as conn:
-        await conn.execute("PRAGMA journal_mode=WAL")  # Включаем WAL режим
-        await conn.execute("PRAGMA synchronous=NORMAL")  # Оптимизируем синхронизацию
-        await conn.execute("PRAGMA busy_timeout=5000")  # Таймаут при блокировке 5 секунд
-        await conn.execute("PRAGMA cache_size=-2000")  # Увеличиваем кэш
-        await conn.execute("PRAGMA foreign_keys=ON")  # Включаем внешние ключи
+        # ИСПРАВЛЕНО: используем text() для SQL запросов
+        await conn.execute(text("PRAGMA journal_mode=WAL"))  # Включаем WAL режим
+        await conn.execute(text("PRAGMA synchronous=NORMAL"))  # Оптимизируем синхронизацию
+        await conn.execute(text("PRAGMA busy_timeout=5000"))  # Таймаут при блокировке 5 секунд
+        await conn.execute(text("PRAGMA cache_size=-2000"))  # Увеличиваем кэш
+        await conn.execute(text("PRAGMA foreign_keys=ON"))  # Включаем внешние ключи
         await conn.commit()
     
     logger.info("База данных инициализирована с оптимизациями для многопользовательской работы")
@@ -59,5 +61,3 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise
     finally:
         await session.close()
-
-
