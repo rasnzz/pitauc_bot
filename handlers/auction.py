@@ -1,9 +1,11 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery
 from sqlalchemy import select, desc, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 import datetime
 import logging
+import traceback
+import asyncio
 
 from database.database import get_db
 from database.models import Auction, Bid, User, AuctionSubscription, Notification
@@ -12,128 +14,184 @@ from utils.formatters import format_auction_message, format_ended_auction_messag
 from utils.notifications import send_outbid_notification, send_subscription_notification
 from config import Config
 from utils.timer import auction_timer_manager
+from utils.periodic_updater import periodic_updater
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+async def process_bid_safe(auction_id: int, user_id: int, amount: float, bot):
+    """Безопасная обработка ставки с защитой от гонок"""
+    max_retries = 3
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            async with get_db() as session:
+                async with session.begin():
+                    # Блокируем аукцион для обновления
+                    stmt = select(Auction).where(
+                        Auction.id == auction_id, 
+                        Auction.status == 'active'
+                    ).with_for_update()
+                    
+                    result = await session.execute(stmt)
+                    auction = result.scalar_one_or_none()
+                    
+                    if not auction:
+                        return {"success": False, "message": "Аукцион не найден или завершен!"}
+                    
+                    # Получаем пользователя
+                    stmt_user = select(User).where(User.telegram_id == user_id)
+                    result_user = await session.execute(stmt_user)
+                    user = result_user.scalar_one_or_none()
+                    
+                    if not user or not user.is_confirmed:
+                        return {"success": False, "message": "Вы не подтвердили правила! Напишите /start боту для подтверждения."}
+                    
+                    # Проверяем минимальную ставку
+                    min_next_bid = auction.current_price + auction.step_price
+                    if amount < min_next_bid:
+                        return {"success": False, "message": f"Минимальная ставка: {min_next_bid} ₽"}
+                    
+                    # Проверяем, не лидирует ли уже пользователь
+                    stmt_last_bid = select(Bid).where(
+                        Bid.auction_id == auction_id
+                    ).order_by(desc(Bid.amount)).limit(1)
+                    
+                    result_last_bid = await session.execute(stmt_last_bid)
+                    last_bid = result_last_bid.scalar_one_or_none()
+                    
+                    if last_bid and last_bid.user_id == user.id:
+                        return {"success": False, "message": "Вы уже лидируете в этом аукционе!"}
+                    
+                    # Создаем ставку
+                    bid = Bid(
+                        auction_id=auction_id,
+                        user_id=user.id,
+                        amount=amount
+                    )
+                    session.add(bid)
+                    
+                    # Обновляем аукцион
+                    auction.current_price = amount
+                    auction.last_bid_time = datetime.datetime.utcnow()
+                    auction.ends_at = auction.last_bid_time + datetime.timedelta(minutes=Config.BID_TIMEOUT_MINUTES)
+                    
+                    # Фиксируем изменения
+                    await session.flush()
+                    
+                    # Возвращаем данные для дальнейшей обработки
+                    return {
+                        "success": True,
+                        "auction": auction,
+                        "bid": bid,
+                        "user": user,
+                        "last_bid": last_bid
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Попытка {attempt + 1} неудачна: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (2 ** attempt))  # Экспоненциальная задержка
+                continue
+            else:
+                logger.error(f"Не удалось обработать ставку после {max_retries} попыток")
+                return {"success": False, "message": "Ошибка при обработке ставки. Попробуйте еще раз."}
+    
+    return {"success": False, "message": "Ошибка при обработке ставки"}
 
 @router.callback_query(F.data.startswith("bid:"))
 async def process_bid(callback: CallbackQuery):
     """Обработка ставки пользователя"""
     try:
-        _, auction_id, amount_str = callback.data.split(":")
-        auction_id = int(auction_id)
+        # Парсим данные
+        _, auction_id_str, amount_str = callback.data.split(":")
+        auction_id = int(auction_id_str)
         amount = float(amount_str)
         
-        async with get_db() as session:
-            async with session.begin():
-                stmt = select(Auction).where(
-                    Auction.id == auction_id, 
-                    Auction.status == 'active'
-                )
-                result = await session.execute(stmt)
-                auction = result.scalar_one_or_none()
-                
-                if not auction:
-                    await callback.answer("Аукцион не найден или завершен!", show_alert=True)
-                    return
-                
-                stmt_user = select(User).where(User.telegram_id == callback.from_user.id)
-                result_user = await session.execute(stmt_user)
-                user = result_user.scalar_one_or_none()
-                
-                if not user or not user.is_confirmed:
-                    await callback.answer(
-                        "❌ Вы не подтвердили правила!\n\n"
-                        "Напишите /start боту для подтверждения.",
-                        show_alert=True
-                    )
-                    return
-                
-                if amount <= auction.current_price:
-                    await callback.answer(
-                        f"Ставка должна быть выше текущей ({auction.current_price} ₽)!",
-                        show_alert=True
-                    )
-                    return
-                
-                min_next_bid = auction.current_price + auction.step_price
-                if amount < min_next_bid:
-                    await callback.answer(
-                        f"Минимальная ставка: {min_next_bid} ₽",
-                        show_alert=True
-                    )
-                    return
-                
-                stmt_last_bid = select(Bid).where(
+        logger.info(f"Новая ставка: аукцион={auction_id}, сумма={amount}, пользователь={callback.from_user.id}")
+        
+        # Обрабатываем ставку
+        result = await process_bid_safe(
+            auction_id=auction_id,
+            user_id=callback.from_user.id,
+            amount=amount,
+            bot=callback.bot
+        )
+        
+        if not result["success"]:
+            await callback.answer(result["message"], show_alert=True)
+            return
+        
+        # Успешная ставка - выполняем дополнительные действия
+        auction = result["auction"]
+        user = result["user"]
+        last_bid = result["last_bid"]
+        
+        try:
+            # Получаем данные для обновления сообщения
+            async with get_db() as session:
+                # Получаем топ-3 ставки
+                stmt_top_bids = select(Bid).where(
                     Bid.auction_id == auction_id
-                ).order_by(desc(Bid.id))
-                result_last_bid = await session.execute(stmt_last_bid)
-                last_bid = result_last_bid.scalar_one_or_none()
-                
-                if last_bid and last_bid.user_id == user.id:
-                    await callback.answer(
-                        "Вы уже лидируете в этом аукционе!",
-                        show_alert=True
-                    )
-                    return
-                
-                bid = Bid(
-                    auction_id=auction_id,
-                    user_id=user.id,
-                    amount=amount
+                ).order_by(desc(Bid.amount)).limit(3).options(
+                    selectinload(Bid.user)
                 )
-                session.add(bid)
+                result_top = await session.execute(stmt_top_bids)
+                top_bids = result_top.scalars().all()
                 
-                auction.current_price = amount
-                auction.last_bid_time = datetime.datetime.utcnow()
-                # Теперь добавляем только 240 минут (4 часа) вместо 480
-                auction.ends_at = auction.last_bid_time + datetime.timedelta(minutes=Config.BID_TIMEOUT_MINUTES)
-        
-        async with get_db() as session:
-            stmt_top_bids = select(Bid).where(
-                Bid.auction_id == auction_id
-            ).order_by(desc(Bid.amount)).limit(3).options(
-                selectinload(Bid.user)
-            )
-            result_top = await session.execute(stmt_top_bids)
-            top_bids = result_top.scalars().all()
-            
-            stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction_id)
-            result_count = await session.execute(stmt_count)
-            bids_count = result_count.scalar()
-            
-            stmt_auction = select(Auction).where(Auction.id == auction_id)
-            result_auction = await session.execute(stmt_auction)
-            auction_for_message = result_auction.scalar_one()
-            
-            await update_channel_message(callback.bot, auction_for_message, top_bids, bids_count)
-            
-            if last_bid and last_bid.user_id != user.id:
-                stmt_prev_user = select(User).where(User.id == last_bid.user_id)
-                result_prev_user = await session.execute(stmt_prev_user)
-                prev_user = result_prev_user.scalar_one_or_none()
+                # Получаем количество ставок
+                stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction_id)
+                result_count = await session.execute(stmt_count)
+                bids_count = result_count.scalar()
                 
-                if prev_user:
-                    await send_outbid_notification(callback.bot, prev_user, auction, amount)
-            
-            await send_subscription_notification(callback.bot, auction, user, amount)
-            
-            notification = Notification(
-                user_id=user.id,
-                auction_id=auction_id,
-                message=f"Вы сделали ставку {amount} ₽ в аукционе '{auction.title}'"
-            )
-            session.add(notification)
-            await session.commit()
-        
-        await auction_timer_manager.start_auction_timer(auction_id, auction.ends_at)
+                # Обновляем сообщение в канале
+                await update_channel_message(callback.bot, auction, top_bids, bids_count)
+                
+                # Отправляем уведомление предыдущему лидеру
+                if last_bid and last_bid.user_id != user.id:
+                    try:
+                        stmt_prev_user = select(User).where(User.id == last_bid.user_id)
+                        result_prev_user = await session.execute(stmt_prev_user)
+                        prev_user = result_prev_user.scalar_one_or_none()
+                        
+                        if prev_user:
+                            await send_outbid_notification(callback.bot, prev_user, auction, amount)
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке уведомления о перебитии: {e}")
+                
+                # Уведомляем подписчиков
+                try:
+                    await send_subscription_notification(callback.bot, auction, user, amount)
+                except Exception as e:
+                    logger.error(f"Ошибка при уведомлении подписчиков: {e}")
+                
+                # Создаем уведомление для пользователя
+                notification = Notification(
+                    user_id=user.id,
+                    auction_id=auction_id,
+                    message=f"Вы сделали ставку {amount} ₽ в аукционе '{auction.title}'"
+                )
+                session.add(notification)
+                await session.commit()
+                
+                # Запускаем таймер
+                await auction_timer_manager.start_auction_timer(auction_id, auction.ends_at)
+                
+                # Немедленно обновляем в канале
+                await periodic_updater.force_update_auction(auction_id)
+                
+        except Exception as e:
+            logger.error(f"Ошибка после успешной ставки: {e}")
         
         await callback.answer(f"✅ Ваша ставка {amount} ₽ принята!")
-        from utils.periodic_updater import periodic_updater
-        await periodic_updater.force_update_auction(auction_id)
-            
+        
+    except ValueError as e:
+        logger.error(f"Неверный формат данных: {e}")
+        await callback.answer("Ошибка формата данных", show_alert=True)
     except Exception as e:
-        logger.error(f"Ошибка при обработке ставки: {e}", exc_info=True)
+        logger.error(f"Неожиданная ошибка при обработке ставки: {e}")
+        logger.error(traceback.format_exc())
         await callback.answer("Ошибка при обработке ставки", show_alert=True)
 
 @router.callback_query(F.data.startswith("top3:"))
@@ -255,13 +313,11 @@ async def back_to_auction(callback: CallbackQuery):
         result_count = await session.execute(stmt_count)
         bids_count = result_count.scalar()
         
-        # Используем правильную функцию форматирования в зависимости от статуса
         if auction.status == 'ended':
             message_text = format_ended_auction_message(auction, top_bids, bids_count)
         else:
             message_text = format_auction_message(auction, top_bids, bids_count)
         
-        # Для завершенных аукционов не показываем клавиатуру для ставок
         if auction.status == 'active':
             next_bid_amount = auction.current_price + auction.step_price
             await callback.message.edit_text(
@@ -279,13 +335,11 @@ async def back_to_auction(callback: CallbackQuery):
 async def update_channel_message(bot, auction: Auction, top_bids=None, bids_count=0):
     """Обновление сообщения в канале"""
     
-    # Используем правильную функцию форматирования в зависимости от статуса
     if auction.status == 'ended':
         message_text = format_ended_auction_message(auction, top_bids, bids_count)
     else:
         message_text = format_auction_message(auction, top_bids, bids_count)
     
-    # Для завершенных аукционов не показываем клавиатуру
     if auction.status == 'active':
         next_bid_amount = auction.current_price + auction.step_price
         
@@ -309,7 +363,6 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
         except Exception as e:
             logger.error(f"Ошибка при обновлении сообщения в канале: {e}")
     else:
-        # Для завершенных аукционов обновляем без клавиатуры
         try:
             try:
                 await bot.edit_message_caption(
