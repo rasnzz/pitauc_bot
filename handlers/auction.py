@@ -53,16 +53,23 @@ async def process_bid_safe(auction_id: int, user_id: int, amount: float, bot):
                     if amount < min_next_bid:
                         return {"success": False, "message": f"Минимальная ставка: {min_next_bid} ₽"}
                     
-                    # Проверяем, не лидирует ли уже пользователь
+                    # УДАЛЕНА ПРОВЕРКА НА ЛИДИРОВАНИЕ - РАЗРЕШАЕМ МНОГО СТАВОК ОТ ОДНОГО ПОЛЬЗОВАТЕЛЯ
+                    # Вместо этого проверяем, что ставка выше текущей
+                    if amount <= auction.current_price:
+                        return {"success": False, "message": f"Ваша ставка должна быть выше текущей цены ({auction.current_price} ₽)"}
+                    
+                    # Получаем последнюю ставку пользователя в этом аукционе
                     stmt_last_bid = select(Bid).where(
-                        Bid.auction_id == auction_id
+                        Bid.auction_id == auction_id,
+                        Bid.user_id == user.id
                     ).order_by(desc(Bid.amount)).limit(1)
                     
                     result_last_bid = await session.execute(stmt_last_bid)
-                    last_bid = result_last_bid.scalar_one_or_none()
+                    last_user_bid = result_last_bid.scalar_one_or_none()
                     
-                    if last_bid and last_bid.user_id == user.id:
-                        return {"success": False, "message": "Вы уже лидируете в этом аукционе!"}
+                    # Если пользователь уже делал ставку, проверяем что новая ставка выше его предыдущей
+                    if last_user_bid and amount <= last_user_bid.amount:
+                        return {"success": False, "message": f"Ваша новая ставка должна быть выше вашей предыдущей ({last_user_bid.amount} ₽)"}
                     
                     # Создаем ставку
                     bid = Bid(
@@ -80,13 +87,22 @@ async def process_bid_safe(auction_id: int, user_id: int, amount: float, bot):
                     # Фиксируем изменения
                     await session.flush()
                     
+                    # Получаем предыдущую лучшую ставку (не от этого пользователя)
+                    stmt_prev_top = select(Bid).where(
+                        Bid.auction_id == auction_id,
+                        Bid.user_id != user.id
+                    ).order_by(desc(Bid.amount)).limit(1)
+                    
+                    result_prev_top = await session.execute(stmt_prev_top)
+                    previous_top_bid = result_prev_top.scalar_one_or_none()
+                    
                     # Возвращаем данные для дальнейшей обработки
                     return {
                         "success": True,
                         "auction": auction,
                         "bid": bid,
                         "user": user,
-                        "last_bid": last_bid
+                        "previous_top_bid": previous_top_bid
                     }
                     
         except Exception as e:
@@ -126,7 +142,7 @@ async def process_bid(callback: CallbackQuery):
         # Успешная ставка - выполняем дополнительные действия
         auction = result["auction"]
         user = result["user"]
-        last_bid = result["last_bid"]
+        previous_top_bid = result["previous_top_bid"]
         
         try:
             # Получаем данные для обновления сообщения
@@ -148,10 +164,10 @@ async def process_bid(callback: CallbackQuery):
                 # Обновляем сообщение в канале
                 await update_channel_message(callback.bot, auction, top_bids, bids_count)
                 
-                # Отправляем уведомление предыдущему лидеру
-                if last_bid and last_bid.user_id != user.id:
+                # Отправляем уведомление предыдущему лидеру (если он не текущий пользователь)
+                if previous_top_bid and previous_top_bid.user_id != user.id:
                     try:
-                        stmt_prev_user = select(User).where(User.id == last_bid.user_id)
+                        stmt_prev_user = select(User).where(User.id == previous_top_bid.user_id)
                         result_prev_user = await session.execute(stmt_prev_user)
                         prev_user = result_prev_user.scalar_one_or_none()
                         
@@ -160,7 +176,7 @@ async def process_bid(callback: CallbackQuery):
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления о перебитии: {e}")
                 
-                # Уведомляем подписчиков
+                # Уведомляем подписчиков (кроме сделавшего ставку)
                 try:
                     await send_subscription_notification(callback.bot, auction, user, amount)
                 except Exception as e:
@@ -175,7 +191,7 @@ async def process_bid(callback: CallbackQuery):
                 session.add(notification)
                 await session.commit()
                 
-                # Запускаем таймер
+                # Запускаем/обновляем таймер
                 await auction_timer_manager.start_auction_timer(auction_id, auction.ends_at)
                 
                 # Немедленно обновляем в канале
