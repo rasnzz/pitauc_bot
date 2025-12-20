@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uvloop  # Добавьте в requirements.txt: uvloop==0.19.0
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -10,7 +11,10 @@ from database.database import init_db
 from middlewares.rate_limit import RateLimitMiddleware
 from middlewares.user_check import UserCheckMiddleware
 from utils.backup import backup_manager
-from utils.periodic_updater import periodic_updater  # Импортируем
+from utils.periodic_updater import periodic_updater
+
+# Используем uvloop для лучшей производительности асинхронных операций
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 # Настройка логирования
 logging.basicConfig(
@@ -57,7 +61,7 @@ async def main():
     dp = Dispatcher(storage=storage)
     
     # Регистрируем middleware
-    rate_limit_middleware = RateLimitMiddleware(rate_limit_period=3)
+    rate_limit_middleware = RateLimitMiddleware(rate_limit_period=1)  # Уменьшаем до 1 секунды
     user_check_middleware = UserCheckMiddleware()
     
     dp.callback_query.middleware(rate_limit_middleware)
@@ -89,12 +93,8 @@ async def main():
     logger.info("Бот запущен")
     
     # Запуск бота
-    logger.info(f"Периодическое обновление запущено: {periodic_updater.is_running}")
-    logger.info(f"Интервал обновления: {periodic_updater.update_interval} сек")
-    logger.info(f"Бот установлен: {periodic_updater.bot is not None}")      
-
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем")
     finally:
