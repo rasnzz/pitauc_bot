@@ -21,9 +21,12 @@ class Config:
     
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///auctions.db")
     
-    # ИЗМЕНЕНО: с 480 минут на 240 минут (4 часа вместо 8)
     BID_TIMEOUT_MINUTES = int(os.getenv("BID_TIMEOUT_MINUTES", "240"))
     BID_STEP_PERCENT = int(os.getenv("BID_STEP_PERCENT", "10"))
+    
+    # Настройки для многопользовательской работы
+    DATABASE_TIMEOUT = int(os.getenv("DATABASE_TIMEOUT", "60"))
+    BID_RETRY_ATTEMPTS = int(os.getenv("BID_RETRY_ATTEMPTS", "3"))
     
     if not BOT_TOKEN:
         print("⚠️  ВНИМАНИЕ: BOT_TOKEN не установлен!")
