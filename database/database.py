@@ -16,7 +16,7 @@ engine = create_async_engine(
     connect_args={
         "check_same_thread": False,  # Разрешаем доступ из разных потоков
         "timeout": 60,               # Увеличиваем таймаут до 60 секунд
-        "isolation_level": None      # Отключаем изоляцию для лучшей производительности
+        "isolation_level": "SERIALIZABLE"      # Отключаем изоляцию для лучшей производительности
     },
     pool_pre_ping=True,              # Проверяем соединение перед использованием
     pool_recycle=3600                # Пересоздаем соединение каждый час
@@ -60,3 +60,4 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise
     finally:
         await session.close()
+
