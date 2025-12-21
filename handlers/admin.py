@@ -10,6 +10,8 @@ import datetime
 import logging
 import asyncio
 
+from sqlalchemy import delete
+
 from config import Config
 from database.database import get_db
 from database.models import Auction, User, Bid, Notification
@@ -522,6 +524,78 @@ async def admin_end_auction(callback: CallbackQuery):
             f"Победитель: {'Есть' if auction.winner_id else 'Нет'}"
         )
         await callback.answer("Аукцион завершён!")
+        
+@router.callback_query(F.data.startswith("admin_delete:"))
+async def admin_delete_auction(callback: CallbackQuery):
+    """Удалить аукцион без победителя"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    auction_id = int(callback.data.split(":")[1])
+    
+    async with get_db() as session:
+        async with session.begin():
+            # Получаем аукцион
+            stmt = select(Auction).where(Auction.id == auction_id)
+            result = await session.execute(stmt)
+            auction = result.scalar_one_or_none()
+            
+            if not auction:
+                await callback.answer("Аукцион не найден!", show_alert=True)
+                return
+            
+            # Сохраняем ID сообщения в канале для удаления
+            channel_message_id = auction.channel_message_id
+            
+            # Удаляем все связанные записи в правильном порядке
+            # 1. Уведомления об этом аукционе
+            await session.execute(
+                delete(Notification).where(Notification.auction_id == auction_id)
+            )
+            
+            # 2. Подписки на этот аукцион
+            await session.execute(
+                delete(AuctionSubscription).where(AuctionSubscription.auction_id == auction_id)
+            )
+            
+            # 3. Ставки на этот аукцион
+            await session.execute(
+                delete(Bid).where(Bid.auction_id == auction_id)
+            )
+            
+            # 4. Сам аукцион
+            await session.execute(
+                delete(Auction).where(Auction.id == auction_id)
+            )
+            
+        # Останавливаем таймер, если он активен
+        from utils.timer import auction_timer_manager
+        if auction_id in auction_timer_manager.active_timers:
+            auction_timer_manager.active_timers[auction_id].cancel()
+            del auction_timer_manager.active_timers[auction_id]
+        
+        # Очищаем историю обновлений
+        from utils.periodic_updater import periodic_updater
+        periodic_updater.clear_update_history(auction_id)
+        
+        # Удаляем сообщение в канале
+        try:
+            await callback.bot.delete_message(
+                chat_id=Config.CHANNEL_ID,
+                message_id=channel_message_id
+            )
+            logger.info(f"Сообщение в канале для аукциона #{auction_id} удалено")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении сообщения в канале: {e}")
+            # Продолжаем, даже если не удалось удалить сообщение
+        
+        await callback.message.answer(
+            f"✅ Аукцион #{auction_id} удалён без выявления победителя.\n"
+            f"Сообщение в канале удалено."
+        )
+        await callback.answer("Аукцион удалён!")
+
 
 @router.callback_query(F.data == "admin_limits")
 async def admin_limits(callback: CallbackQuery):
@@ -572,4 +646,5 @@ async def admin_limits(callback: CallbackQuery):
 """
         
         await callback.message.answer(limits_text, parse_mode="HTML")
+
         await callback.answer()
