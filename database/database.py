@@ -61,3 +61,13 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise
     finally:
         await session.close()
+
+# Новая функция для безопасного использования сессии в асинхронных задачах
+async def get_db_session():
+    """Получение сессии для использования в асинхронных задачах"""
+    session = AsyncSessionLocal()
+    try:
+        return session
+    except Exception as e:
+        await session.close()
+        raise
