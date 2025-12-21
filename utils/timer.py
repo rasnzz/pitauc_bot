@@ -7,10 +7,10 @@ from sqlalchemy.orm import selectinload
 
 from database.database import get_db
 from database.models import Auction, User, Bid
-from utils.formatters import format_auction_message, format_ended_auction_message
-from keyboards.inline import get_channel_auction_keyboard
+from utils.formatters import format_ended_auction_message
 from utils.periodic_updater import periodic_updater
 from config import Config
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,20 @@ class AuctionTimerManager:
             if auction_id in self.active_timers:
                 try:
                     self.active_timers[auction_id].cancel()
-                    await asyncio.sleep(0.1)
                 except:
                     pass
+            
+            # Проверяем, что аукцион еще активен
+            async with get_db() as session:
+                stmt = select(Auction).where(
+                    Auction.id == auction_id,
+                    Auction.status == 'active'
+                )
+                result = await session.execute(stmt)
+                auction = result.scalar_one_or_none()
+                
+                if not auction:
+                    return
             
             # Создаем новую задачу
             task = asyncio.create_task(
@@ -43,12 +54,6 @@ class AuctionTimerManager:
             )
             self.active_timers[auction_id] = task
             logger.info(f"Таймер запущен для аукциона #{auction_id}")
-            
-            # Запускаем немедленное обновление таймера в канале
-            try:
-                await periodic_updater.force_update_auction(auction_id)
-            except Exception as e:
-                logger.error(f"Ошибка при обновлении аукциона #{auction_id}: {e}")
     
     async def _auction_timer_task(self, auction_id: int, ends_at: datetime):
         """Фоновая задача таймера"""
@@ -57,12 +62,11 @@ class AuctionTimerManager:
             delay = (ends_at - now).total_seconds()
             
             if delay > 0:
-                logger.info(f"Таймер аукциона #{auction_id}: ждем {delay} секунд")
+                logger.info(f"Таймер аукциона #{auction_id}: ждем {delay:.0f} секунд")
                 await asyncio.sleep(delay)
-                await self._end_auction(auction_id)
-            else:
-                logger.info(f"Таймер аукциона #{auction_id}: время уже истекло, завершаем")
-                await self._end_auction(auction_id)
+            
+            # Завершаем аукцион
+            await self._end_auction(auction_id)
                 
         except asyncio.CancelledError:
             logger.info(f"Таймер для аукциона #{auction_id} отменен")
@@ -73,54 +77,55 @@ class AuctionTimerManager:
             async with self.lock:
                 if auction_id in self.active_timers:
                     del self.active_timers[auction_id]
-                # Очищаем историю обновлений для этого аукциона
                 periodic_updater.clear_update_history(auction_id)
     
     async def _end_auction(self, auction_id: int):
         """Завершение аукциона"""
         try:
-            from utils.notifications import send_winner_notification
+            logger.info(f"Начинаю завершение аукциона #{auction_id}")
             
             if not self.bot:
                 logger.error(f"Бот не установлен для завершения аукциона #{auction_id}")
                 return
             
-            logger.info(f"Завершаю аукцион #{auction_id}")
-            
+            # Получаем данные аукциона
             async with get_db() as session:
-                async with session.begin():
-                    # Получаем аукцион с блокировкой
-                    stmt = select(Auction).where(
-                        Auction.id == auction_id,
-                        Auction.status == 'active'
-                    ).with_for_update()
-                    
-                    result = await session.execute(stmt)
-                    auction = result.scalar_one_or_none()
-                    
-                    if not auction:
-                        logger.info(f"Аукцион #{auction_id} уже завершен или удален")
-                        return
-                    
-                    # Получаем победителя
-                    stmt_winner = select(Bid).where(
-                        Bid.auction_id == auction_id
-                    ).order_by(desc(Bid.amount)).limit(1)
-                    result_winner = await session.execute(stmt_winner)
-                    winning_bid = result_winner.scalar_one_or_none()
-                    
-                    # Обновляем статус аукциона
-                    auction.status = 'ended'
-                    auction.ended_at = datetime.utcnow()
-                    
-                    if winning_bid:
-                        auction.winner_id = winning_bid.user_id
-                        auction.current_price = winning_bid.amount
-                    else:
-                        # Если нет ставок, победителя нет
-                        auction.winner_id = None
+                # Получаем аукцион с блокировкой для обновления
+                stmt = select(Auction).where(
+                    Auction.id == auction_id,
+                    Auction.status == 'active'
+                )
+                
+                result = await session.execute(stmt)
+                auction = result.scalar_one_or_none()
+                
+                if not auction:
+                    logger.info(f"Аукцион #{auction_id} уже завершен или не найден")
+                    return
+                
+                # Получаем победителя
+                stmt_winner = select(Bid).where(
+                    Bid.auction_id == auction_id
+                ).order_by(desc(Bid.amount)).limit(1)
+                result_winner = await session.execute(stmt_winner)
+                winning_bid = result_winner.scalar_one_or_none()
+                
+                # Обновляем статус аукциона
+                auction.status = 'ended'
+                auction.ended_at = datetime.utcnow()
+                
+                if winning_bid:
+                    auction.winner_id = winning_bid.user_id
+                    auction.current_price = winning_bid.amount
+                    logger.info(f"Аукцион #{auction_id} - победитель: {winning_bid.user_id}, сумма: {winning_bid.amount}")
+                else:
+                    logger.info(f"Аукцион #{auction_id} - победителя нет")
+                
+                await session.commit()
             
             # Получаем полные данные для обновления сообщения
+            await asyncio.sleep(0.5)  # Даем время на коммит
+            
             async with get_db() as session:
                 # Получаем аукцион с победителем
                 stmt = select(Auction).where(Auction.id == auction_id).options(
@@ -129,7 +134,7 @@ class AuctionTimerManager:
                 result = await session.execute(stmt)
                 auction = result.scalar_one()
                 
-                # Получаем топ-3 ставки
+                # Получаем топ-3 ставки с пользователями
                 stmt_top_bids = select(Bid).where(
                     Bid.auction_id == auction_id
                 ).order_by(desc(Bid.amount)).limit(3).options(
@@ -147,8 +152,8 @@ class AuctionTimerManager:
                 await self._update_channel_message(auction, top_bids, bids_count)
             
             # Уведомляем победителя, если есть
-            if auction.winner_id:
-                await self._notify_winner(auction_id, auction.winner_id)
+            if winning_bid:
+                await self._notify_winner(auction_id, winning_bid.user_id)
             
             logger.info(f"Аукцион #{auction_id} успешно завершен")
             
@@ -158,38 +163,75 @@ class AuctionTimerManager:
     async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
         """Обновление сообщения в канале после завершения аукциона"""
         try:
-            # Формируем сообщение о завершенном аукционе
-            message_text = format_ended_auction_message(auction, top_bids, bids_count)
+            from utils.formatters import format_ended_auction_message
             
             if not auction.channel_message_id:
                 logger.error(f"Нет channel_message_id для аукциона #{auction.id}")
                 return
             
-            # Обновляем сообщение в канале (без клавиатуры)
+            if not self.bot:
+                logger.error(f"Бот не установлен для обновления сообщения #{auction.id}")
+                return
+            
+            logger.info(f"Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
+            
+            # Формируем сообщение о завершенном аукционе
+            message_text = format_ended_auction_message(auction, top_bids, bids_count)
+            
+            logger.info(f"Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
+            
+            # Проверяем, есть ли фото у аукциона
+            has_photo = False
             try:
-                # Пробуем обновить подпись (если было фото)
-                await self.bot.edit_message_caption(
-                    chat_id=Config.CHANNEL_ID,
-                    message_id=auction.channel_message_id,
-                    caption=message_text,
-                    parse_mode='HTML'
-                )
-                logger.info(f"Сообщение в канале для аукциона #{auction.id} обновлено (завершен, фото)")
-            except Exception as caption_error:
-                try:
-                    # Если не получилось, обновляем текст
+                if auction.photos:
+                    photos_list = json.loads(auction.photos)
+                    has_photo = bool(photos_list and photos_list[0])
+            except:
+                pass
+            
+            # Пытаемся обновить сообщение
+            try:
+                if has_photo:
+                    # Обновляем подпись к фото
+                    await self.bot.edit_message_caption(
+                        chat_id=Config.CHANNEL_ID,
+                        message_id=auction.channel_message_id,
+                        caption=message_text,
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"Обновлена подпись к фото для аукциона #{auction.id}")
+                else:
+                    # Обновляем текстовое сообщение
                     await self.bot.edit_message_text(
                         chat_id=Config.CHANNEL_ID,
                         message_id=auction.channel_message_id,
                         text=message_text,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Сообщение в канале для аукциона #{auction.id} обновлено (завершен, текст)")
-                except Exception as text_error:
-                    logger.error(f"Ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {text_error}")
+                    logger.info(f"Обновлен текст для аукциона #{auction.id}")
+                    
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Ошибка при обновлении сообщения для аукциона #{auction.id}: {error_msg}")
+                
+                # Пробуем альтернативный метод
+                try:
+                    if "message can't be edited" in error_msg or "message not found" in error_msg:
+                        logger.warning(f"Сообщение для аукциона #{auction.id} нельзя отредактировать")
+                    elif has_photo:
+                        # Пробуем обновить текст вместо подписи
+                        await self.bot.edit_message_text(
+                            chat_id=Config.CHANNEL_ID,
+                            message_id=auction.channel_message_id,
+                            text=message_text,
+                            parse_mode='HTML'
+                        )
+                        logger.info(f"Обновлен текст (альтернативный метод) для аукциона #{auction.id}")
+                except Exception as e2:
+                    logger.error(f"Альтернативный метод также не сработал для аукциона #{auction.id}: {e2}")
             
         except Exception as e:
-            logger.error(f"Ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}")
+            logger.error(f"Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
     
     async def _notify_winner(self, auction_id: int, winner_user_id: int):
         """Уведомление победителя"""
@@ -209,12 +251,15 @@ class AuctionTimerManager:
                 winner = result_user.scalar_one_or_none()
                 
                 if not winner:
+                    logger.error(f"Победитель с ID {winner_user_id} не найден для аукциона #{auction_id}")
                     return
+                
+                logger.info(f"Отправляю уведомление победителю {winner.telegram_id} для аукциона #{auction_id}")
                 
                 await send_winner_notification(self.bot, auction, winner)
                     
         except Exception as e:
-            logger.error(f"Ошибка при уведомлении победителя: {e}")
+            logger.error(f"Ошибка при уведомлении победителя: {e}", exc_info=True)
     
     async def restore_timers(self):
         """Восстановление таймеров после перезапуска бота"""
@@ -233,6 +278,7 @@ class AuctionTimerManager:
                 
                 for auction in active_auctions:
                     await self.start_auction_timer(auction.id, auction.ends_at)
+                    logger.info(f"Восстановлен таймер для аукциона #{auction.id}")
                 
                 # Завершаем аукционы, время которых истекло
                 stmt_expired = select(Auction).where(
@@ -246,7 +292,7 @@ class AuctionTimerManager:
                 expired_auctions = result_expired.scalars().all()
                 
                 for auction in expired_auctions:
-                    logger.info(f"Аукцион #{auction.id} истек во время простоя бота")
+                    logger.info(f"Аукцион #{auction.id} истек во время простоя бота, завершаю")
                     await self._end_auction(auction.id)
                 
                 logger.info(f"Восстановлено {len(active_auctions)} таймеров, завершено {len(expired_auctions)} аукционов")
@@ -264,7 +310,6 @@ class AuctionTimerManager:
                     pass
             
             self.active_timers.clear()
-            # Очищаем всю историю обновлений
             periodic_updater.clear_update_history()
             logger.info("Все таймеры остановлены")
 
