@@ -2,6 +2,83 @@ from datetime import datetime, timedelta
 import json
 from database.models import Auction, Bid, Notification
 from config import Config
+import logging
+
+logger = logging.getLogger(__name__)
+
+def format_ended_auction_message(auction: Auction, top_bids=None, bids_count=0) -> str:
+    """Форматирование сообщения о завершенном аукционе для канала"""
+    
+    # Форматируем топ ставок
+    top_bids_text = ""
+    if top_bids:
+        places = ["🥇", "🥈", "🥉"]
+        for i, bid in enumerate(top_bids[:3]):
+            if i < len(places):
+                emoji = places[i]
+                username = format_username(bid.user)
+                time_ago = format_time_ago(bid.created_at)
+                top_bids_text += f"{emoji} {username}: {bid.amount} ₽ ({time_ago})\n"
+    
+    # Информация о победителе
+    winner_text = ""
+    if auction.winner:
+        winner = auction.winner
+        winner_name = format_username(winner)
+        winner_text = f"🏆 Победитель: {winner_name} - {auction.current_price} ₽\n"
+    else:
+        winner_text = "🏆 Победитель: Не определен\n"
+    
+    # Форматируем дату завершения
+    ended_at_text = "Время не указано"
+    if auction.ended_at:
+        try:
+            ended_at_text = auction.ended_at.strftime('%d.%m.%Y %H:%M')
+        except:
+            pass
+    
+    message = f"""
+🔔 АУКЦИОН ЗАВЕРШЕН!
+
+{auction.title}
+
+{auction.description if auction.description else ''}
+
+Стартовая цена: {auction.start_price} ₽
+Шаг ставки: {auction.step_price} ₽
+
+Финальная цена: {auction.current_price} ₽
+📊 Количество ставок: {bids_count}
+
+{winner_text}
+{top_bids_text}
+
+📅 Аукцион завершен: {ended_at_text}
+
+Спасибо всем за участие!
+""".strip()
+    
+    # Проверяем длину сообщения (ограничение Telegram)
+    if len(message) > 1024:
+        # Если сообщение слишком длинное, укорачиваем его
+        logger.warning(f"Сообщение слишком длинное ({len(message)} символов), укорачиваю")
+        message = f"""
+🔔 АУКЦИОН ЗАВЕРШЕН!
+
+{auction.title}
+
+Финальная цена: {auction.current_price} ₽
+📊 Количество ставок: {bids_count}
+
+{winner_text}
+
+📅 Аукцион завершен: {ended_at_text}
+
+Спасибо всем за участие!
+""".strip()
+    
+    logger.debug(f"Сформировано сообщение для завершенного аукциона #{auction.id}, длина: {len(message)} символов")
+    return message
 
 def format_auction_message(auction: Auction, top_bids=None, bids_count=0) -> str:
     """Форматирование сообщения об аукционе для канала"""
@@ -52,50 +129,6 @@ def format_auction_message(auction: Auction, top_bids=None, bids_count=0) -> str
 📊 Количество ставок: {bids_count}
 
 {top_bids_text}
-""".strip()
-    
-    return message
-
-def format_ended_auction_message(auction: Auction, top_bids=None, bids_count=0) -> str:
-    """Форматирование сообщения о завершенном аукционе для канала"""
-    
-    # Форматируем топ ставок
-    top_bids_text = ""
-    if top_bids:
-        places = ["🥇", "🥈", "🥉"]
-        for i, bid in enumerate(top_bids[:3]):
-            if i < len(places):
-                emoji = places[i]
-                username = format_username(bid.user)
-                time_ago = format_time_ago(bid.created_at)
-                top_bids_text += f"{emoji} {username}: {bid.amount} ₽ ({time_ago})\n"
-    
-    # Информация о победителе
-    winner_text = ""
-    if auction.winner:
-        winner = auction.winner
-        winner_name = format_username(winner)
-        winner_text = f"🏆 Победитель: {winner_name} - {auction.current_price} ₽\n"
-    
-    message = f"""
-🔔 АУКЦИОН ЗАВЕРШЕН !
-
-{auction.title}
-
-{auction.description if auction.description else ''}
-
-Стартовая цена: {auction.start_price} ₽
-Шаг ставки: {auction.step_price} ₽
-
-Финальная цена: {auction.current_price} ₽
-📊 Количество ставок: {bids_count}
-
-{winner_text}
-{top_bids_text}
-
-📅 Аукцион завершен: {auction.ended_at.strftime('%d.%m.%Y %H:%M') if auction.ended_at else 'Время не указано'}
-
-Спасибо всем за участие!
 """.strip()
     
     return message
@@ -218,4 +251,5 @@ def format_time_remaining(last_bid_time, ends_at=None):
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
     
+
     return f"{hours}ч {minutes}м"
