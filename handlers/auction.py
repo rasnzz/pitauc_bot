@@ -53,23 +53,18 @@ async def process_bid_safe(auction_id: int, user_id: int, amount: float, bot):
                     if amount < min_next_bid:
                         return {"success": False, "message": f"Минимальная ставка: {min_next_bid} ₽"}
                     
-                    # УДАЛЕНА ПРОВЕРКА НА ЛИДИРОВАНИЕ - РАЗРЕШАЕМ МНОГО СТАВОК ОТ ОДНОГО ПОЛЬЗОВАТЕЛЯ
-                    # Вместо этого проверяем, что ставка выше текущей
-                    if amount <= auction.current_price:
-                        return {"success": False, "message": f"Ваша ставка должна быть выше текущей цены ({auction.current_price} ₽)"}
-                    
-                    # Получаем последнюю ставку пользователя в этом аукционе
-                    stmt_last_bid = select(Bid).where(
-                        Bid.auction_id == auction_id,
-                        Bid.user_id == user.id
+                    # ВОССТАНОВЛЕНА ПРОВЕРКА: пользователь не может ставить, если уже лидирует
+                    # Получаем текущую лучшую ставку
+                    stmt_top_bid = select(Bid).where(
+                        Bid.auction_id == auction_id
                     ).order_by(desc(Bid.amount)).limit(1)
                     
-                    result_last_bid = await session.execute(stmt_last_bid)
-                    last_user_bid = result_last_bid.scalar_one_or_none()
+                    result_top_bid = await session.execute(stmt_top_bid)
+                    top_bid = result_top_bid.scalar_one_or_none()
                     
-                    # Если пользователь уже делал ставку, проверяем что новая ставка выше его предыдущей
-                    if last_user_bid and amount <= last_user_bid.amount:
-                        return {"success": False, "message": f"Ваша новая ставка должна быть выше вашей предыдущей ({last_user_bid.amount} ₽)"}
+                    # Если есть лучшая ставка и она от этого пользователя
+                    if top_bid and top_bid.user_id == user.id:
+                        return {"success": False, "message": "Вы уже лидируете в этом аукционе! Дождитесь, пока кто-то перебьет вашу ставку."}
                     
                     # Создаем ставку
                     bid = Bid(
@@ -84,10 +79,7 @@ async def process_bid_safe(auction_id: int, user_id: int, amount: float, bot):
                     auction.last_bid_time = datetime.datetime.utcnow()
                     auction.ends_at = auction.last_bid_time + datetime.timedelta(minutes=Config.BID_TIMEOUT_MINUTES)
                     
-                    # Фиксируем изменения
-                    await session.flush()
-                    
-                    # Получаем предыдущую лучшую ставку (не от этого пользователя)
+                    # Получаем предыдущую лучшую ставку (для уведомления)
                     stmt_prev_top = select(Bid).where(
                         Bid.auction_id == auction_id,
                         Bid.user_id != user.id
@@ -396,3 +388,4 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                 )
         except Exception as e:
             logger.error(f"Ошибка при обновлении завершенного аукциона в канале: {e}")
+
