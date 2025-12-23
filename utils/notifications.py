@@ -7,6 +7,13 @@ from database.database import get_db
 from database.models import User, Auction, AuctionSubscription, Notification
 from config import Config
 from utils.formatters import get_channel_link, format_username
+import html
+
+def escape_html(text: str) -> str:
+    """Экранировать HTML-сущности"""
+    if not text:
+        return ""
+    return html.escape(str(text))
 
 logger = logging.getLogger(__name__)
 
@@ -190,3 +197,4 @@ async def send_auction_ending_soon_notification(bot, auction: Auction, minutes_l
                     
     except Exception as e:
         logger.error(f"Ошибка при уведомлении о завершении аукциона: {e}")
+
