@@ -228,9 +228,13 @@ async def process_step_price(message: Message, state: FSMContext):
             logger.info(f"Аукцион создан с ID: {auction.id}")
             
             # Запускаем таймер для аукциона
-            asyncio.create_task(
-                auction_timer_manager.start_auction_timer(auction.id, auction.ends_at)
-            )
+        try:
+    # Запускаем таймер сразу
+            await auction_timer_manager.start_auction_timer(auction.id, auction.ends_at)
+            logger.info(f"Таймер для аукциона #{auction.id} запущен")
+        except Exception as e:
+            logger.error(f"Ошибка запуска таймера для аукциона #{auction.id}: {e}")
+    # Но продолжаем создание аукциона
             
             # Для нового аукциона нет ставок
             message_text = format_auction_message(auction, top_bids=[], bids_count=0)
@@ -648,3 +652,4 @@ async def admin_limits(callback: CallbackQuery):
         await callback.message.answer(limits_text, parse_mode="HTML")
 
         await callback.answer()
+
