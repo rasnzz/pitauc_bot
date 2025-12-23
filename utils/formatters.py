@@ -235,6 +235,36 @@ def format_time_ago(dt) -> str:
     else:
         return "только что"
 
+def get_channel_link(auction: 'Auction') -> str:
+    """Получить правильную ссылку на сообщение в канале"""
+    try:
+        from config import Config
+        
+        if not auction.channel_message_id:
+            return "Ссылка недоступна"
+        
+        # Если CHANNEL_ID числовой
+        if isinstance(Config.CHANNEL_ID, int):
+            # Преобразуем в формат для ссылки (убираем -100 если есть)
+            channel_id = str(Config.CHANNEL_ID)
+            if channel_id.startswith('-100'):
+                chat_id = channel_id[4:]  # Убираем -100
+            else:
+                chat_id = channel_id.lstrip('-')
+            return f"https://t.me/c/{chat_id}/{auction.channel_message_id}"
+        else:
+            # Если это username (@channel)
+            username = str(Config.CHANNEL_ID).lstrip('@')
+            return f"https://t.me/{username}/{auction.channel_message_id}"
+    except Exception as e:
+        logger.error(f"Ошибка формирования ссылки: {e}")
+        return "Ссылка недоступна"
+
+def format_channel_message_link(auction: 'Auction') -> str:
+    """Форматированная ссылка для сообщений"""
+    link = get_channel_link(auction)
+    return f"🔗 <a href='{link}'>Ссылка на аукцион</a>"
+
 def format_time_remaining(last_bid_time, ends_at=None):
     """Форматирование оставшегося времени"""
     if ends_at:
@@ -253,3 +283,4 @@ def format_time_remaining(last_bid_time, ends_at=None):
     
 
     return f"{hours}ч {minutes}м"
+
