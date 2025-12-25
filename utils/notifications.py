@@ -2,20 +2,20 @@ import asyncio
 from datetime import datetime
 from sqlalchemy import select
 import logging
+import html
 
 from database.database import get_db
 from database.models import User, Auction, AuctionSubscription, Notification
 from config import Config
 from utils.formatters import get_channel_link, format_username
-import html
+
+logger = logging.getLogger(__name__)
 
 def escape_html(text: str) -> str:
     """Экранировать HTML-сущности"""
     if not text:
         return ""
     return html.escape(str(text))
-
-logger = logging.getLogger(__name__)
 
 async def send_outbid_notification(bot, user: User, auction: Auction, new_bid: float):
     """Уведомление пользователя, которого перебили"""
@@ -24,7 +24,7 @@ async def send_outbid_notification(bot, user: User, auction: Auction, new_bid: f
         
         message = (
             f"⚠️ <b>Вашу ставку перебили!</b>\n\n"
-            f"🏷 Лот: {auction.title}\n"
+            f"🏷 Лот: {escape_html(auction.title)}\n"
             f"💰 Ваша ставка: {auction.current_price - auction.step_price} ₽\n"
             f"🆕 Новая ставка: {new_bid} ₽\n"
             f"⬆️ Минимальная ставка: {new_bid + auction.step_price} ₽\n\n"
@@ -78,7 +78,7 @@ async def send_subscription_notification(bot, auction: Auction, bid_user: User, 
                     
                     message = (
                         f"🎯 <b>Новая ставка в аукционе!</b>\n\n"
-                        f"🏷 Лот: {auction.title}\n"
+                        f"🏷 Лот: {escape_html(auction.title)}\n"
                         f"💰 Новая ставка: {amount} ₽\n"
                         f"👤 Ставку сделал: {format_username(bid_user)}\n"
                         f"⬆️ Минимальная ставка: {amount + auction.step_price} ₽\n\n"
@@ -115,7 +115,7 @@ async def send_winner_notification(bot, auction: Auction, winner: User):
         
         message = (
             f"🏆 <b>Поздравляем! Вы выиграли аукцион!</b>\n\n"
-            f"🏷 Лот: <b>{auction.title}</b>\n"
+            f"🏷 Лот: <b>{escape_html(auction.title)}</b>\n"
             f"💰 Ваша ставка: <b>{auction.current_price} ₽</b>\n"
             f"📅 Завершён: {auction.ended_at.strftime('%d.%m.%Y %H:%M') if auction.ended_at else 'Недавно'}\n\n"
             f"📞 <b>Свяжитесь с администратором для оплаты:</b>\n"
@@ -179,7 +179,7 @@ async def send_auction_ending_soon_notification(bot, auction: Auction, minutes_l
                     
                     message = (
                         f"⏰ <b>Аукцион скоро завершится!</b>\n\n"
-                        f"🏷 Лот: {auction.title}\n"
+                        f"🏷 Лот: {escape_html(auction.title)}\n"
                         f"💰 Текущая цена: {auction.current_price} ₽\n"
                         f"⏳ Осталось: {minutes_left} минут\n\n"
                         f"🔗 {link}"
@@ -197,4 +197,3 @@ async def send_auction_ending_soon_notification(bot, auction: Auction, minutes_l
                     
     except Exception as e:
         logger.error(f"Ошибка при уведомлении о завершении аукциона: {e}")
-
