@@ -1,3 +1,5 @@
+# utils/validators.py - ЗАМЕНИТЕ ВЕСЬ ФАЙЛ
+
 import re
 from typing import Tuple, Optional
 
@@ -23,18 +25,32 @@ class AuctionValidator:
     
     @staticmethod
     def validate_price(price_str: str) -> Tuple[bool, Optional[float], str]:
-        """Валидация цены"""
+        """Валидация цены - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+        if not price_str:
+            return False, None, "Цена не может быть пустой"
+        
         try:
-            price = float(price_str.replace(',', '.'))
+            # Удаляем все пробелы (поддержка формата "1 000" или "1 000.50")
+            cleaned = price_str.replace(' ', '')
+            
+            # Заменяем запятую на точку (поддержка "1,000" или "1,000.50")
+            cleaned = cleaned.replace(',', '.')
+            
+            # Проверяем, что остались только цифры и одна точка
+            if not cleaned.replace('.', '').isdigit():
+                return False, None, "Неверный формат цены. Используйте цифры и точку (например: 1000 или 1000.50)"
+            
+            # Преобразуем в число
+            price = float(cleaned)
             
             if price <= 0:
                 return False, None, "Цена должна быть положительной"
             
             if price > 1_000_000_000:  # 1 миллиард
-                return False, None, "Цена слишком большая"
+                return False, None, "Цена слишком большая (максимум 1 000 000 000 ₽)"
             
-            # Проверка на разумность (не более 2 знаков после запятой)
-            if round(price, 2) != price:
+            # Проверяем, что не более 2 знаков после запятой
+            if abs(price - round(price, 2)) > 0.001:
                 return False, None, "Используйте максимум 2 знака после запятой"
             
             return True, price, "OK"
@@ -53,6 +69,27 @@ class AuctionValidator:
         
         if step_price < start_price * 0.01:
             return False, "Шаг ставки слишком маленький (мин. 1% от стартовой цены)"
+        
+        return True, "OK"
+
+class BidValidator:
+    @staticmethod
+    def validate_bid_amount(amount: str) -> Tuple[bool, Optional[float], str]:
+        """Валидация суммы ставки из строки"""
+        return AuctionValidator.validate_price(amount)
+    
+    @staticmethod
+    def validate_bid_amount_numeric(amount: float, current_price: float, step_price: float) -> Tuple[bool, str]:
+        """Валидация суммы ставки (уже числовой)"""
+        # Проверяем, что ставка не меньше минимальной
+        min_bid = current_price + step_price
+        
+        if amount < min_bid:
+            return False, f"Минимальная ставка: {min_bid:.2f} ₽"
+        
+        # Проверяем, что ставка не слишком большая
+        if amount > 1_000_000_000:
+            return False, "Слишком большая ставка (максимум 1 000 000 000 ₽)"
         
         return True, "OK"
 
