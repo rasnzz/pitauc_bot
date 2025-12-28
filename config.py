@@ -1,3 +1,4 @@
+# config.py - улучшенная версия
 import os
 import re
 from dotenv import load_dotenv
@@ -7,19 +8,16 @@ load_dotenv()
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")
     
-    # Получаем CHANNEL_ID как строку
-    CHANNEL_ID_STR = os.getenv("CHANNEL_ID", "")
-    
-    # Парсим ID канала
+    # Обработка CHANNEL_ID
+    CHANNEL_ID_STR = os.getenv("CHANNEL_ID", "").strip()
     CHANNEL_ID = None
     
     if CHANNEL_ID_STR:
-        # Если это числовой ID (начинается с -100)
-        if CHANNEL_ID_STR.lstrip('-').isdigit():
+        # Если это числовой ID (может быть отрицательным для каналов)
+        if CHANNEL_ID_STR.lstrip('-').replace('.', '').isdigit():
             CHANNEL_ID = int(CHANNEL_ID_STR)
         # Если это username (@channel)
         elif CHANNEL_ID_STR.startswith('@'):
-            # Пробуем получить числовой ID через бота (будет позже)
             CHANNEL_ID = CHANNEL_ID_STR
         else:
             # Пробуем извлечь ID из разных форматов
