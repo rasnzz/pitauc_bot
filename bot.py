@@ -83,7 +83,7 @@ async def main():
     dp.include_router(auction_router)
     
     # Инициализируем планировщик таймеров
-    await auction_timer_manager.restore_timers()
+    await auction_timer_manager.restore_timers_improved()
     logger.info("Планировщик таймеров запущен")
     
     # Запускаем планировщик бэкапов
@@ -113,3 +113,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
