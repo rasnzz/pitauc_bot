@@ -12,6 +12,7 @@ from database.models import Auction, Bid, User
 from config import Config
 from utils.formatters import format_auction_message
 from keyboards.inline import get_channel_auction_keyboard
+from database.models import User 
 
 logger = logging.getLogger(__name__)
 
@@ -206,3 +207,4 @@ class PeriodicUpdater:
 
 # Глобальный экземпляр
 periodic_updater = PeriodicUpdater(update_interval=60)  # 1 минута
+
