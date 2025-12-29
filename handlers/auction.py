@@ -352,7 +352,16 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
         next_bid_amount = auction.current_price + auction.step_price
         
         try:
+            # Пытаемся определить, есть ли фото
+            has_photo = False
             try:
+                if auction.photos:
+                    photos_list = json.loads(auction.photos)
+                    has_photo = bool(photos_list and photos_list[0])
+            except:
+                pass
+            
+            if has_photo:
                 await bot.edit_message_caption(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
@@ -360,7 +369,7 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                     reply_markup=get_channel_auction_keyboard(auction.id, next_bid_amount),
                     parse_mode='HTML'
                 )
-            except:
+            else:
                 await bot.edit_message_text(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
@@ -372,14 +381,23 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
             logger.error(f"Ошибка при обновлении сообщения в канале: {e}")
     else:
         try:
+            # Аналогично для завершенного аукциона
+            has_photo = False
             try:
+                if auction.photos:
+                    photos_list = json.loads(auction.photos)
+                    has_photo = bool(photos_list and photos_list[0])
+            except:
+                pass
+            
+            if has_photo:
                 await bot.edit_message_caption(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
                     caption=message_text,
                     parse_mode='HTML'
                 )
-            except:
+            else:
                 await bot.edit_message_text(
                     chat_id=Config.CHANNEL_ID,
                     message_id=auction.channel_message_id,
@@ -388,4 +406,3 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                 )
         except Exception as e:
             logger.error(f"Ошибка при обновлении завершенного аукциона в канале: {e}")
-
