@@ -55,12 +55,14 @@ def format_ended_auction_message(auction: Auction, top_bids=None, bids_count=0) 
     top_bids_text = ""
     if top_bids:
         places = ["🥇", "🥈", "🥉"]
-        for i, bid in enumerate(top_bids[:3]):
+        for i, bid_data in enumerate(top_bids[:3]):
             if i < len(places):
                 emoji = places[i]
-                username = format_username(bid.user)
-                time_ago = format_time_ago(bid.created_at)
-                amount_text = f"{bid.amount:,.2f}".replace(",", " ").replace(".", ",")
+                user = bid_data.get('user') if isinstance(bid_data, dict) else bid_data.user if hasattr(bid_data, 'user') else None
+                username = format_username(user)
+                time_ago = format_time_ago(bid_data.get('created_at') if isinstance(bid_data, dict) else bid_data.created_at)
+                amount = bid_data.get('amount') if isinstance(bid_data, dict) else bid_data.amount
+                amount_text = f"{amount:,.2f}".replace(",", " ").replace(".", ",")
                 top_bids_text += f"{emoji} {username}: {amount_text} ₽ ({time_ago})\n"
     
     # Информация о победителе
@@ -146,12 +148,14 @@ def format_auction_message(auction: Auction, top_bids=None, bids_count=0) -> str
     top_bids_text = ""
     if top_bids:
         places = ["🥇", "🥈", "🥉"]
-        for i, bid in enumerate(top_bids[:3]):
+        for i, bid_data in enumerate(top_bids[:3]):
             if i < len(places):
                 emoji = places[i]
-                username = format_username(bid.user)
-                time_ago = format_time_ago(bid.created_at)
-                amount_text = f"{bid.amount:,.2f}".replace(",", " ").replace(".", ",")
+                user = bid_data.get('user') if isinstance(bid_data, dict) else bid_data.user if hasattr(bid_data, 'user') else None
+                username = format_username(user)
+                time_ago = format_time_ago(bid_data.get('created_at') if isinstance(bid_data, dict) else bid_data.created_at)
+                amount = bid_data.get('amount') if isinstance(bid_data, dict) else bid_data.amount
+                amount_text = f"{amount:,.2f}".replace(",", " ").replace(".", ",")
                 top_bids_text += f"{emoji} {username}: {amount_text} ₽ ({time_ago})\n"
     
     # Экранируем текст
