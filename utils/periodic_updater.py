@@ -5,10 +5,10 @@ from typing import Dict, Set
 import random
 
 from sqlalchemy import select, and_, func
-from sqlalchemy import text  # Добавляем импорт
+from sqlalchemy.orm import selectinload
 
 from database.database import get_db
-from database.models import Auction, Bid
+from database.models import Auction, Bid, User
 from config import Config
 from utils.formatters import format_auction_message
 from keyboards.inline import get_channel_auction_keyboard
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class PeriodicUpdater:
     """Менеджер для периодического обновления таймеров в канале"""
     
-    def __init__(self, update_interval: int = 300):  # 5 минут = 300 секунд
+    def __init__(self, update_interval: int = 60):  # 1 минута вместо 5
         self.update_interval = update_interval
         self.is_running = False
         self.task = None
@@ -73,13 +73,12 @@ class PeriodicUpdater:
             return
         
         try:
-            # Используем новую сессию для каждого обновления
             async with get_db() as session:
                 # Получаем все активные аукционы
                 stmt = select(Auction).where(
                     Auction.status == 'active',
                     Auction.channel_message_id.isnot(None)
-                ).order_by(Auction.ends_at.asc())  # Сначала те, что скоро завершатся
+                ).order_by(Auction.ends_at.asc())
                 
                 result = await session.execute(stmt)
                 auctions = result.scalars().all()
@@ -89,20 +88,10 @@ class PeriodicUpdater:
                 
                 logger.debug(f"Периодическое обновление: найдено {len(auctions)} активных аукционов")
                 
-                # Обновляем каждый аукцион
+                # Обновляем каждый аукцион (убираем проверку времени)
                 for i, auction in enumerate(auctions):
                     try:
-                        # Пропускаем аукционы, которые обновлялись менее 5 минут назад
-                        if auction.id in self.last_update_time:
-                            time_since_last = datetime.utcnow() - self.last_update_time[auction.id]
-                            if time_since_last.total_seconds() < 300:  # 5 минут
-                                continue
-                        
-                        # Создаем новую сессию для каждого аукциона
-                        await self._update_single_auction(auction)
-                        
-                        # Запоминаем время обновления
-                        self.last_update_time[auction.id] = datetime.utcnow()
+                        await self._update_single_auction_safe(session, auction)
                         
                         # Небольшая задержка между обновлениями (0.5-1.5 секунды)
                         if i < len(auctions) - 1:
@@ -115,32 +104,50 @@ class PeriodicUpdater:
         except Exception as e:
             logger.error(f"Ошибка при получении списка аукционов: {e}")
     
-    async def _update_single_auction(self, auction: Auction):
-        """Обновить один аукцион"""
+    async def _update_single_auction_safe(self, session, auction: Auction):
+        """Безопасное обновление одного аукциона (использует переданную сессию)"""
         try:
-            # Используем отдельную сессию для каждого аукциона
-            async with get_db() as session:
-                # Получаем топ-3 ставки
-                stmt_top_bids = select(Bid).where(
-                    Bid.auction_id == auction.id
-                ).order_by(Bid.amount.desc()).limit(3)
-                result_top = await session.execute(stmt_top_bids)
-                top_bids = result_top.scalars().all()
+            # Перезагружаем аукцион в текущей сессии
+            stmt_reload = select(Auction).where(Auction.id == auction.id)
+            result_reload = await session.execute(stmt_reload)
+            current_auction = result_reload.scalar_one()
+            
+            # Получаем топ-3 ставки с пользователями
+            stmt_top_bids = select(Bid).where(
+                Bid.auction_id == auction.id
+            ).order_by(Bid.amount.desc()).limit(3)
+            result_top = await session.execute(stmt_top_bids)
+            top_bids = result_top.scalars().all()
+            
+            # Подготавливаем данные топ ставок
+            prepared_top_bids = []
+            for bid in top_bids:
+                # Загружаем пользователя для каждой ставки
+                stmt_user = select(User).where(User.id == bid.user_id)
+                result_user = await session.execute(stmt_user)
+                user = result_user.scalar_one_or_none()
                 
-                # Получаем количество ставок
-                stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
-                result_count = await session.execute(stmt_count)
-                bids_count = result_count.scalar()
-                
-                # Формируем сообщение
-                message_text = format_auction_message(auction, top_bids, bids_count)
-                next_bid_amount = auction.current_price + auction.step_price
-                
-                # Обновляем сообщение в канале
-                await self._edit_channel_message(auction, message_text, next_bid_amount)
-                
-                logger.debug(f"Периодическое обновление: аукцион #{auction.id} обновлен")
-                
+                if user:
+                    prepared_top_bids.append({
+                        'amount': bid.amount,
+                        'created_at': bid.created_at,
+                        'user': user
+                    })
+            
+            # Получаем количество ставок
+            stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
+            result_count = await session.execute(stmt_count)
+            bids_count = result_count.scalar()
+            
+            # Формируем сообщение
+            message_text = format_auction_message(current_auction, prepared_top_bids, bids_count)
+            next_bid_amount = current_auction.current_price + current_auction.step_price
+            
+            # Обновляем сообщение в канале
+            await self._edit_channel_message(current_auction, message_text, next_bid_amount)
+            
+            logger.debug(f"Периодическое обновление: аукцион #{current_auction.id} обновлен")
+            
         except Exception as e:
             logger.error(f"Ошибка при подготовке данных аукциона #{auction.id}: {e}")
             raise
@@ -184,8 +191,7 @@ class PeriodicUpdater:
                 auction = result.scalar_one_or_none()
                 
                 if auction:
-                    # Используем отдельную сессию для обновления
-                    await self._update_single_auction(auction)
+                    await self._update_single_auction_safe(session, auction)
                     logger.debug(f"Принудительно обновлен аукцион #{auction_id}")
                     
         except Exception as e:
@@ -199,4 +205,4 @@ class PeriodicUpdater:
             self.last_update_time.clear()
 
 # Глобальный экземпляр
-periodic_updater = PeriodicUpdater(update_interval=300)  # 5 минут
+periodic_updater = PeriodicUpdater(update_interval=60)  # 1 минута
