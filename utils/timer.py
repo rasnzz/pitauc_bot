@@ -283,78 +283,128 @@ class AuctionTimerManager:
             logger.error(f"Ошибка при завершении аукциона #{auction_id}: {e}", exc_info=True)
     
     async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
-        """Обновление сообщения в канале после завершения аукциона"""
+    """Обновление сообщения в канале после завершения аукциона"""
+    try:
+        # Используем импортированную функцию из formatters
+        from utils.formatters import format_ended_auction_message
+        
+        if not auction.channel_message_id:
+            logger.error(f"Нет channel_message_id для аукциона #{auction.id}")
+            return
+        
+        if not self.bot:
+            logger.error(f"Бот не установлен для обновления сообщения #{auction.id}")
+            return
+        
+        logger.info(f"Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
+        
+        # Получаем данные в отдельной сессии
+        async with get_db() as session:
+            # Загружаем аукцион
+            stmt = select(Auction).where(Auction.id == auction.id)
+            result = await session.execute(stmt)
+            current_auction = result.scalar_one()
+            
+            # Загружаем победителя, если есть
+            if current_auction.winner_id:
+                stmt_winner = select(User).where(User.id == current_auction.winner_id)
+                result_winner = await session.execute(stmt_winner)
+                winner = result_winner.scalar_one_or_none()
+                if winner:
+                    # Создаем атрибут winner на лету (не сохраняя в БД)
+                    current_auction.winner = winner
+            
+            # Подготавливаем данные топ ставок
+            prepared_top_bids = []
+            if top_bids:
+                for bid in top_bids:
+                    stmt_user = select(User).where(User.id == bid.user_id)
+                    result_user = await session.execute(stmt_user)
+                    user = result_user.scalar_one_or_none()
+                    
+                    if user:
+                        prepared_top_bids.append({
+                            'amount': bid.amount,
+                            'created_at': bid.created_at,
+                            'user': user
+                        })
+            else:
+                # Если топ ставки не переданы, загружаем их
+                stmt_top_bids = select(Bid).where(
+                    Bid.auction_id == auction.id
+                ).order_by(Bid.amount.desc()).limit(3)
+                result_top = await session.execute(stmt_top_bids)
+                top_bids_db = result_top.scalars().all()
+                
+                for bid in top_bids_db:
+                    stmt_user = select(User).where(User.id == bid.user_id)
+                    result_user = await session.execute(stmt_user)
+                    user = result_user.scalar_one_or_none()
+                    
+                    if user:
+                        prepared_top_bids.append({
+                            'amount': bid.amount,
+                            'created_at': bid.created_at,
+                            'user': user
+                        })
+        
+        # Теперь формируем сообщение с подготовленными данными
+        message_text = format_ended_auction_message(current_auction, prepared_top_bids, bids_count)
+        
+        logger.info(f"Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
+        
+        # Проверяем, есть ли фото у аукциона
+        has_photo = False
         try:
-            # Используем импортированную функцию из formatters
-            from utils.formatters import format_ended_auction_message
+            if current_auction.photos:
+                photos_list = json.loads(current_auction.photos)
+                has_photo = bool(photos_list and photos_list[0])
+        except:
+            pass
+        
+        # Пытаемся обновить сообщение
+        try:
+            if has_photo:
+                # Обновляем подпись к фото
+                await self.bot.edit_message_caption(
+                    chat_id=Config.CHANNEL_ID,
+                    message_id=current_auction.channel_message_id,
+                    caption=message_text,
+                    parse_mode='HTML'
+                )
+                logger.info(f"Обновлена подпись к фото для аукциона #{auction.id}")
+            else:
+                # Обновляем текстовое сообщение
+                await self.bot.edit_message_text(
+                    chat_id=Config.CHANNEL_ID,
+                    message_id=current_auction.channel_message_id,
+                    text=message_text,
+                    parse_mode='HTML'
+                )
+                logger.info(f"Обновлен текст для аукциона #{auction.id}")
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Ошибка при обновлении сообщения для аукциона #{auction.id}: {error_msg}")
             
-            if not auction.channel_message_id:
-                logger.error(f"Нет channel_message_id для аукциона #{auction.id}")
-                return
-            
-            if not self.bot:
-                logger.error(f"Бот не установлен для обновления сообщения #{auction.id}")
-                return
-            
-            logger.info(f"Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
-            
-            # Формируем сообщение о завершенном аукционе
-            message_text = format_ended_auction_message(auction, top_bids, bids_count)
-            
-            logger.info(f"Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
-            
-            # Проверяем, есть ли фото у аукциона
-            has_photo = False
+            # Пробуем альтернативный метод
             try:
-                if auction.photos:
-                    photos_list = json.loads(auction.photos)
-                    has_photo = bool(photos_list and photos_list[0])
-            except:
-                pass
-            
-            # Пытаемся обновить сообщение
-            try:
-                if has_photo:
-                    # Обновляем подпись к фото
-                    await self.bot.edit_message_caption(
-                        chat_id=Config.CHANNEL_ID,
-                        message_id=auction.channel_message_id,
-                        caption=message_text,
-                        parse_mode='HTML'
-                    )
-                    logger.info(f"Обновлена подпись к фото для аукциона #{auction.id}")
-                else:
-                    # Обновляем текстовое сообщение
+                if "message can't be edited" in error_msg or "message not found" in error_msg:
+                    logger.warning(f"Сообщение для аукциона #{auction.id} нельзя отредактировать")
+                elif has_photo:
+                    # Пробуем обновить текст вместо подписи
                     await self.bot.edit_message_text(
                         chat_id=Config.CHANNEL_ID,
-                        message_id=auction.channel_message_id,
+                        message_id=current_auction.channel_message_id,
                         text=message_text,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Обновлен текст для аукциона #{auction.id}")
-                    
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Ошибка при обновлении сообщения для аукциона #{auction.id}: {error_msg}")
-                
-                # Пробуем альтернативный метод
-                try:
-                    if "message can't be edited" in error_msg or "message not found" in error_msg:
-                        logger.warning(f"Сообщение для аукциона #{auction.id} нельзя отредактировать")
-                    elif has_photo:
-                        # Пробуем обновить текст вместо подписи
-                        await self.bot.edit_message_text(
-                            chat_id=Config.CHANNEL_ID,
-                            message_id=auction.channel_message_id,
-                            text=message_text,
-                            parse_mode='HTML'
-                        )
-                        logger.info(f"Обновлен текст (альтернативный метод) для аукциона #{auction.id}")
-                except Exception as e2:
-                    logger.error(f"Альтернативный метод также не сработал для аукциона #{auction.id}: {e2}")
-            
-        except Exception as e:
-            logger.error(f"Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
+                    logger.info(f"Обновлен текст (альтернативный метод) для аукциона #{auction.id}")
+            except Exception as e2:
+                logger.error(f"Альтернативный метод также не сработал для аукциона #{auction.id}: {e2}")
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
     
     async def _notify_winner(self, auction_id: int, winner_user_id: int):
         """Уведомление победителя"""
