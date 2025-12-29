@@ -1,18 +1,16 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Set
+from typing import Dict
 import random
 
-from sqlalchemy import select, and_, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, func
 
 from database.database import get_db
 from database.models import Auction, Bid, User
 from config import Config
 from utils.formatters import format_auction_message
 from keyboards.inline import get_channel_auction_keyboard
-from database.models import User 
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +23,7 @@ class PeriodicUpdater:
         self.task = None
         self.bot = None
         self.last_update_time: Dict[int, datetime] = {}
-        
+    
     def set_bot(self, bot):
         """Установить бота для обновления сообщений"""
         self.bot = bot
@@ -207,4 +205,3 @@ class PeriodicUpdater:
 
 # Глобальный экземпляр
 periodic_updater = PeriodicUpdater(update_interval=60)  # 1 минута
-
