@@ -313,43 +313,56 @@ class AuctionTimerManager:
             logger.error(f"Ошибка при завершении аукциона #{auction_id}: {e}", exc_info=True)
     
     async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
-        """Обновление сообщения в канале после завершения аукциона"""
+    """Обновление сообщения в канале после завершения аукциона (ТОЛЬКО редактирование)"""
+    try:
+        logger.info(f"🔄 Начинаю обновление сообщения для аукциона #{auction.id}")
+        
+        if not auction.channel_message_id:
+            logger.error(f"❌ Нет channel_message_id для аукциона #{auction.id}")
+            return
+        
+        if not self.bot:
+            logger.error(f"❌ Бот не установлен для обновления сообщения #{auction.id}")
+            return
+        
+        logger.info(f"📝 Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
+        
+        # Формируем сообщение о завершенном аукционе
+        from utils.formatters import format_ended_auction_message
+        message_text = format_ended_auction_message(auction, top_bids, bids_count)
+        
+        logger.info(f"✅ Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
+        
+        # Проверяем, есть ли фото у аукциона
+        has_photo = False
         try:
-            if not auction.channel_message_id:
-                logger.error(f"Нет channel_message_id для аукциона #{auction.id}")
-                return
-            
-            if not self.bot:
-                logger.error(f"Бот не установлен для обновления сообщения #{auction.id}")
-                return
-            
-            logger.info(f"Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
-            
-            # Формируем сообщение о завершенном аукционе
-            message_text = format_ended_auction_message(auction, top_bids, bids_count)
-            
-            logger.info(f"Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
-            
-            # Проверяем, есть ли фото у аукциона
-            has_photo = False
+            if auction.photos:
+                photos_list = json.loads(auction.photos)
+                if photos_list and photos_list[0]:
+                    has_photo = True
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке фото аукциона #{auction.id}: {e}")
+        
+        logger.info(f"📸 Аукцион #{auction.id} имеет фото: {has_photo}")
+        
+        # Добавляем задержку перед редактированием (1-2 секунды)
+        await asyncio.sleep(1)
+        
+        # Пытаемся обновить сообщение - ТОЛЬКО РЕДАКТИРОВАНИЕ
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                if auction.photos:
-                    photos_list = json.loads(auction.photos)
-                    has_photo = bool(photos_list and photos_list[0])
-            except:
-                pass
-            
-            # Пытаемся обновить сообщение
-            try:
+                logger.info(f"🔄 Попытка {attempt + 1} из {max_retries} для аукциона #{auction.id}")
+                
                 if has_photo:
-                    # Обновляем подпись к фото
+                    # Пробуем обновить подпись к фото
                     await self.bot.edit_message_caption(
                         chat_id=Config.CHANNEL_ID,
                         message_id=auction.channel_message_id,
                         caption=message_text,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Обновлена подпись к фото для аукциона #{auction.id}")
+                    logger.info(f"✅ Обновлена подпись к фото для аукциона #{auction.id}")
                 else:
                     # Обновляем текстовое сообщение
                     await self.bot.edit_message_text(
@@ -358,30 +371,48 @@ class AuctionTimerManager:
                         text=message_text,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Обновлен текст для аукциона #{auction.id}")
-                    
+                    logger.info(f"✅ Обновлен текст для аукциона #{auction.id}")
+                
+                break  # Успешно, выходим из цикла
+                
             except Exception as e:
                 error_msg = str(e)
-                logger.error(f"Ошибка при обновлении сообщения для аукциона #{auction.id}: {error_msg}")
+                logger.error(f"❌ Попытка {attempt + 1} не удалась для аукциона #{auction.id}: {error_msg}")
                 
-                # Пробуем альтернативный метод
-                try:
-                    if "message can't be edited" in error_msg or "message not found" in error_msg:
-                        logger.warning(f"Сообщение для аукциона #{auction.id} нельзя отредактировать")
-                    elif has_photo:
-                        # Пробуем обновить текст вместо подписи
-                        await self.bot.edit_message_text(
-                            chat_id=Config.CHANNEL_ID,
-                            message_id=auction.channel_message_id,
-                            text=message_text,
-                            parse_mode='HTML'
-                        )
-                        logger.info(f"Обновлен текст (альтернативный метод) для аукциона #{auction.id}")
-                except Exception as e2:
-                    logger.error(f"Альтернативный метод также не сработал для аукциона #{auction.id}: {e2}")
+                # Если это последняя попытка, пробуем альтернативный метод
+                if attempt == max_retries - 1:
+                    try:
+                        logger.info(f"🔄 Пробую альтернативный метод редактирования для аукциона #{auction.id}")
+                        if has_photo:
+                            # Если не получилось редактировать подпись, пробуем редактировать текст
+                            await self.bot.edit_message_text(
+                                chat_id=Config.CHANNEL_ID,
+                                message_id=auction.channel_message_id,
+                                text=message_text,
+                                parse_mode='HTML'
+                            )
+                            logger.info(f"✅ Удалось отредактировать текст вместо подписи для аукциона #{auction.id}")
+                        else:
+                            # Если не получилось редактировать текст, пробуем редактировать как подпись
+                            await self.bot.edit_message_caption(
+                                chat_id=Config.CHANNEL_ID,
+                                message_id=auction.channel_message_id,
+                                caption=message_text,
+                                parse_mode='HTML'
+                            )
+                            logger.info(f"✅ Удалось отредактировать как подпись для аукциона #{auction.id}")
+                    except Exception as e2:
+                        logger.error(f"❌ Альтернативный метод редактирования также не сработал для аукциона #{auction.id}: {e2}")
+                else:
+                    # Ждем перед следующей попыткой (экспоненциальная задержка)
+                    wait_time = 2 ** (attempt + 1)  # 2, 4, 8 секунд
+                    logger.info(f"⏳ Жду {wait_time} секунд перед следующей попыткой...")
+                    await asyncio.sleep(wait_time)
+        
+        logger.info(f"✅ Обновление сообщения для аукциона #{auction.id} завершено")
             
-        except Exception as e:
-            logger.error(f"Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
     
     async def _notify_winner(self, auction_id: int, winner_user_id: int):
         """Уведомление победителя"""
