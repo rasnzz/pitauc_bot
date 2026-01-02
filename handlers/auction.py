@@ -341,7 +341,7 @@ async def back_to_auction(callback: CallbackQuery):
         await callback.answer()
 
 async def update_channel_message(bot, auction: Auction, top_bids=None, bids_count=0):
-    """Обновление сообщения в канале"""
+    """Обновление сообщения в канале (ТОЛЬКО редактирование)"""
     
     if auction.status == 'ended':
         message_text = format_ended_auction_message(auction, top_bids, bids_count)
@@ -361,6 +361,9 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
             except:
                 pass
             
+            # Добавляем небольшую задержку
+            await asyncio.sleep(0.5)
+            
             if has_photo:
                 await bot.edit_message_caption(
                     chat_id=Config.CHANNEL_ID,
@@ -379,6 +382,7 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                 )
         except Exception as e:
             logger.error(f"Ошибка при обновлении сообщения в канале: {e}")
+            # Не делаем повторных попыток для ставок - это может вызывать спам
     else:
         try:
             # Аналогично для завершенного аукциона
@@ -389,6 +393,9 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                     has_photo = bool(photos_list and photos_list[0])
             except:
                 pass
+            
+            # Добавляем задержку
+            await asyncio.sleep(0.5)
             
             if has_photo:
                 await bot.edit_message_caption(
@@ -406,3 +413,4 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                 )
         except Exception as e:
             logger.error(f"Ошибка при обновлении завершенного аукциона в канале: {e}")
+
