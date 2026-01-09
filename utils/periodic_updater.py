@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict
 import random
+import json  # Добавьте этот импорт
 
 from sqlalchemy import select, func
 
@@ -143,7 +144,7 @@ class PeriodicUpdater:
             next_bid_amount = current_auction.current_price + current_auction.step_price
             
             # Обновляем сообщение в канале
-            await self._edit_channel_message(current_auction, message_text, next_bid_amount)
+            await self._edit_channel_message_safe(current_auction, message_text, next_bid_amount)
             
             logger.debug(f"Периодическое обновление: аукцион #{current_auction.id} обновлен")
             
@@ -151,30 +152,56 @@ class PeriodicUpdater:
             logger.error(f"Ошибка при подготовке данных аукциона #{auction.id}: {e}")
             raise
     
-    async def _edit_channel_message(self, auction: Auction, message_text: str, next_bid_amount: float):
-        """Обновить сообщение в канале"""
+    async def _edit_channel_message_safe(self, auction: Auction, message_text: str, next_bid_amount: float):
+        """Безопасное обновление сообщения в канале"""
         try:
-            # Пробуем обновить подпись (если было фото)
+            # Проверяем, есть ли фото у аукциона
+            has_photo = False
             try:
-                await self.bot.edit_message_caption(
-                    chat_id=Config.CHANNEL_ID,
-                    message_id=auction.channel_message_id,
-                    caption=message_text,
-                    reply_markup=get_channel_auction_keyboard(auction.id, next_bid_amount),
-                    parse_mode='HTML'
-                )
-            except:
-                # Если не получилось, обновляем текст
-                await self.bot.edit_message_text(
-                    chat_id=Config.CHANNEL_ID,
-                    message_id=auction.channel_message_id,
-                    text=message_text,
-                    reply_markup=get_channel_auction_keyboard(auction.id, next_bid_amount),
-                    parse_mode='HTML'
-                )
+                if auction.photos:
+                    photos_list = json.loads(auction.photos)
+                    has_photo = bool(photos_list and photos_list[0])
+            except Exception as e:
+                logger.error(f"Ошибка при проверке фото аукциона #{auction.id}: {e}")
+            
+            # Пытаемся определить тип сообщения и отредактировать
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    if has_photo:
+                        # Пробуем обновить подпись к фото
+                        await self.bot.edit_message_caption(
+                            chat_id=Config.CHANNEL_ID,
+                            message_id=auction.channel_message_id,
+                            caption=message_text,
+                            reply_markup=get_channel_auction_keyboard(auction.id, next_bid_amount),
+                            parse_mode='HTML'
+                        )
+                        break
+                    else:
+                        # Пробуем обновить текст сообщения
+                        await self.bot.edit_message_text(
+                            chat_id=Config.CHANNEL_ID,
+                            message_id=auction.channel_message_id,
+                            text=message_text,
+                            reply_markup=get_channel_auction_keyboard(auction.id, next_bid_amount),
+                            parse_mode='HTML'
+                        )
+                        break
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    # Если первая попытка не удалась, пробуем другой метод
+                    if attempt == 0:
+                        logger.debug(f"Попытка {attempt + 1} не удалась для аукциона #{auction.id}, пробую другой метод: {error_msg}")
+                        # Меняем метод редактирования
+                        has_photo = not has_photo
+                    else:
+                        logger.warning(f"Не удалось обновить сообщение для аукциона #{auction.id}: {error_msg}")
+                        break
                 
         except Exception as e:
-            # Если сообщение не найдено (например, удалено), логируем
             logger.warning(f"Не удалось обновить сообщение для аукциона #{auction.id}: {e}")
     
     async def force_update_auction(self, auction_id: int):
