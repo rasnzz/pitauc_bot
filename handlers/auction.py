@@ -6,6 +6,7 @@ import datetime
 import logging
 import traceback
 import asyncio
+import json  # ДОБАВЛЕНО
 
 from database.database import get_db
 from database.models import Auction, Bid, User, AuctionSubscription, Notification
@@ -413,4 +414,3 @@ async def update_channel_message(bot, auction: Auction, top_bids=None, bids_coun
                 )
         except Exception as e:
             logger.error(f"Ошибка при обновлении завершенного аукциона в канале: {e}")
-
