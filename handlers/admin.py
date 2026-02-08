@@ -661,3 +661,26 @@ async def admin_limits(callback: CallbackQuery):
         await callback.message.answer(limits_text, parse_mode="HTML")
 
         await callback.answer()
+
+@router.message(Command("fix_channel"))
+async def cmd_fix_channel(message: Message):
+    """Исправить все сообщения в канале"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет прав администратора!")
+        return
+    
+    await message.answer("🔄 Начинаю исправление всех сообщений в канале...")
+    
+    try:
+        from utils.channel_updater import get_channel_updater
+        updater = get_channel_updater(message.bot)
+        
+        if updater:
+            await updater.check_and_fix_all_messages()
+            await message.answer("✅ Все сообщения в канале проверены и исправлены!")
+        else:
+            await message.answer("❌ Не удалось инициализировать ChannelUpdater")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при исправлении канала: {e}")
+        await message.answer(f"❌ Ошибка: {str(e)}")
