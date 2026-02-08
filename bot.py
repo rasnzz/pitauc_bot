@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import uvloop  # Добавьте в requirements.txt: uvloop==0.19.0
+import uvloop
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -12,6 +12,7 @@ from middlewares.rate_limit import RateLimitMiddleware
 from middlewares.user_check import UserCheckMiddleware
 from utils.backup import backup_manager
 from utils.periodic_updater import periodic_updater
+from utils.timer import auction_timer_manager
 
 # Используем uvloop для лучшей производительности асинхронных операций
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -38,6 +39,15 @@ async def schedule_backups():
     """Запуск планировщика бэкапов"""
     await backup_manager.schedule_backups(interval_hours=24)
 
+async def check_expired_auctions_on_startup():
+    """Проверка просроченных аукционов при запуске"""
+    logger.info("Проверка просроченных аукционов...")
+    expired_count = await auction_timer_manager.check_and_complete_expired_auctions()
+    if expired_count > 0:
+        logger.info(f"Завершено {expired_count} просроченных аукционов при запуске")
+    else:
+        logger.info("Просроченных аукционов не найдено")
+
 async def main():
     """Основная функция запуска бота"""
     # Инициализация базы данных
@@ -46,6 +56,9 @@ async def main():
     
     # Создаем бэкап при запуске
     await create_backup_on_startup()
+    
+    # Проверяем просроченные аукционы
+    await check_expired_auctions_on_startup()
     
     # Создаем бота и диспетчер
     bot = Bot(
@@ -57,7 +70,6 @@ async def main():
     periodic_updater.set_bot(bot)
     
     # Устанавливаем бота для менеджера таймеров
-    from utils.timer import auction_timer_manager
     auction_timer_manager.set_bot(bot)
     
     # Используем MemoryStorage для FSM
@@ -113,4 +125,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
