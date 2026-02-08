@@ -13,6 +13,7 @@ from middlewares.user_check import UserCheckMiddleware
 from utils.backup import backup_manager
 from utils.periodic_updater import periodic_updater
 from utils.timer import auction_timer_manager
+from utils.channel_updater import get_channel_updater  # НОВЫЙ ИМПОРТ
 
 # Используем uvloop для лучшей производительности асинхронных операций
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -48,6 +49,19 @@ async def check_expired_auctions_on_startup():
     else:
         logger.info("Просроченных аукционов не найдено")
 
+async def fix_all_channel_messages_on_startup(bot):
+    """Исправление всех сообщений в канале при запуске"""
+    logger.info("🔄 Проверка и исправление всех сообщений в канале...")
+    try:
+        updater = get_channel_updater(bot)
+        if updater:
+            await updater.check_and_fix_all_messages()
+            logger.info("✅ Проверка сообщений в канале завершена")
+        else:
+            logger.error("❌ Не удалось создать ChannelUpdater")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке сообщений в канале: {e}")
+
 async def main():
     """Основная функция запуска бота"""
     # Инициализация базы данных
@@ -57,14 +71,17 @@ async def main():
     # Создаем бэкап при запуске
     await create_backup_on_startup()
     
-    # Проверяем просроченные аукционы
-    await check_expired_auctions_on_startup()
-    
     # Создаем бота и диспетчер
     bot = Bot(
         token=Config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
+    
+    # Проверяем просроченные аукционы
+    await check_expired_auctions_on_startup()
+    
+    # Исправляем все сообщения в канале
+    await fix_all_channel_messages_on_startup(bot)
     
     # Устанавливаем бота для периодического обновления
     periodic_updater.set_bot(bot)
@@ -72,12 +89,15 @@ async def main():
     # Устанавливаем бота для менеджера таймеров
     auction_timer_manager.set_bot(bot)
     
+    # Инициализируем ChannelUpdater
+    get_channel_updater(bot)
+    
     # Используем MemoryStorage для FSM
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     
     # Регистрируем middleware
-    rate_limit_middleware = RateLimitMiddleware(rate_limit_period=1)  # Уменьшаем до 1 секунды
+    rate_limit_middleware = RateLimitMiddleware(rate_limit_period=1)
     user_check_middleware = UserCheckMiddleware()
     
     dp.callback_query.middleware(rate_limit_middleware)
