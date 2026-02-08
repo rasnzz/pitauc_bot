@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict
 import random
-import json  # Добавьте этот импорт
+import json
 
 from sqlalchemy import select, func
 
@@ -24,6 +24,7 @@ class PeriodicUpdater:
         self.task = None
         self.bot = None
         self.last_update_time: Dict[int, datetime] = {}
+        self._timer_check_interval = 300  # Проверка таймеров каждые 5 минут
     
     def set_bot(self, bot):
         """Установить бота для обновления сообщений"""
@@ -52,9 +53,17 @@ class PeriodicUpdater:
     async def _periodic_update_task(self):
         """Фоновая задача для периодического обновления"""
         try:
+            check_counter = 0
             while self.is_running:
                 try:
                     await self._update_all_active_auctions()
+                    
+                    # Периодически проверяем таймеры (каждые 5 минут)
+                    check_counter += 1
+                    if check_counter >= (self._timer_check_interval / self.update_interval):
+                        check_counter = 0
+                        await self._check_timers()
+                        
                 except Exception as e:
                     logger.error(f"Ошибка при периодическом обновлении: {e}")
                 
@@ -66,6 +75,38 @@ class PeriodicUpdater:
         except Exception as e:
             logger.error(f"Критическая ошибка в периодическом обновлении: {e}")
             self.is_running = False
+    
+    async def _check_timers(self):
+        """Проверка таймеров на корректность"""
+        try:
+            logger.debug("🔍 Проверка таймеров...")
+            
+            from utils.timer import auction_timer_manager
+            
+            # Проверяем таймеры в менеджере
+            active_timer_count = len(auction_timer_manager.active_timers)
+            logger.debug(f"Активных таймеров в менеджере: {active_timer_count}")
+            
+            # Проверяем активные аукционы в БД
+            async with get_db() as session:
+                stmt = select(Auction).where(
+                    Auction.status == 'active',
+                    Auction.ends_at.isnot(None),
+                    Auction.ends_at > datetime.utcnow()
+                )
+                result = await session.execute(stmt)
+                active_auctions = result.scalars().all()
+                
+                logger.debug(f"Активных аукционов в БД: {len(active_auctions)}")
+                
+                # Проверяем, для всех ли активных аукционов запущены таймеры
+                for auction in active_auctions:
+                    if auction.id not in auction_timer_manager.active_timers:
+                        logger.warning(f"⚠️ Для активного аукциона #{auction.id} нет таймера! Запускаю...")
+                        await auction_timer_manager.start_auction_timer(auction.id, auction.ends_at)
+                        
+        except Exception as e:
+            logger.error(f"Ошибка при проверке таймеров: {e}")
     
     async def _update_all_active_auctions(self):
         """Обновить все активные аукционы"""
@@ -134,7 +175,7 @@ class PeriodicUpdater:
                         'user': user
                     })
             
-            # Получаем количество ставок
+            # Получаем количество ставки
             stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
             result_count = await session.execute(stmt_count)
             bids_count = result_count.scalar()
