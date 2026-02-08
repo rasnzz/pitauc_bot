@@ -43,7 +43,7 @@ class Auction(Base):
     last_bid_time = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     ends_at = Column(DateTime, nullable=True)
-    ended_at = Column(DateTime, nullable=True)  # ДОБАВЛЕНО
+    ended_at = Column(DateTime, nullable=True)
     
     # Связи
     winner = relationship("User", foreign_keys=[winner_id])
@@ -56,6 +56,7 @@ class Auction(Base):
         Index('ix_auctions_ends_at', 'ends_at'),
         Index('ix_auctions_last_bid_time', 'last_bid_time'),
         Index('ix_auctions_created_at', 'created_at'),
+        Index('ix_auctions_winner_id', 'winner_id'),  # ДОБАВЛЕНО
     )
     
     @property
