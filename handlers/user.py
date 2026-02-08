@@ -9,7 +9,7 @@ import datetime
 from database.database import get_db
 from database.models import User, Bid, Auction, Notification
 from keyboards.inline import get_confirmation_keyboard, get_user_menu_keyboard, get_bot_auction_keyboard, get_cancel_bid_keyboard
-from utils.formatters import format_user_bids, format_notifications
+from utils.formatters import format_user_bids, format_notifications, escape_html  # ДОБАВЛЕНО escape_html
 from config import Config
 
 router = Router()
@@ -81,8 +81,13 @@ async def cmd_auctions(message: Message):
             result_bids = await session.execute(stmt_bids)
             bids_count = result_bids.scalar()
             
-            text = f"🏷 <b>{auction.title}</b>\n\n"
-            text += f"📝 Описание: {auction.description[:100]}...\n" if auction.description else ""
+            # Экранирование HTML - ИСПРАВЛЕНО
+            title = escape_html(auction.title)
+            description = escape_html(auction.description[:100] + "...") if auction.description else ""
+            
+            text = f"🏷 <b>{title}</b>\n\n"
+            if description:
+                text += f"📝 Описание: {description}\n"
             text += f"💰 Стартовая цена: {auction.start_price} ₽\n"
             text += f"📈 Шаг ставки: {auction.step_price} ₽\n"
             text += f"🏆 Текущая цена: {auction.current_price} ₽\n"
@@ -215,7 +220,8 @@ async def show_user_wins(message: Message):
         
         wins_text = "🏆 <b>Ваши выигранные аукционы:</b>\n\n"
         for auction in auctions:
-            wins_text += f"• <b>{auction.title}</b>\n"
+            title = escape_html(auction.title)  # Экранирование
+            wins_text += f"• <b>{title}</b>\n"
             wins_text += f"  💰 Цена: {auction.current_price} ₽\n"
             wins_text += f"  ⏰ Завершен: {auction.ended_at.strftime('%d.%m.%Y %H:%M')}\n\n"
         
@@ -420,7 +426,7 @@ async def cmd_cancel_bid(message: Message):
         # Показываем подтверждение отмены
         await message.answer(
             f"⚠️ <b>Подтверждение отмены ставки</b>\n\n"
-            f"🏷 Аукцион: {auction.title}\n"
+            f"🏷 Аукцион: {escape_html(auction.title)}\n"  # Экранирование
             f"💰 Ваша ставка: {last_bid.amount} ₽\n"
             f"📅 Время ставки: {last_bid.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
             f"Вы уверены, что хотите отменить эту ставку?",
@@ -502,11 +508,10 @@ async def cancel_bid_confirm(callback: CallbackQuery):
         
         await callback.message.edit_text(
             "✅ <b>Ваша ставка успешно отменена!</b>\n\n"
-            f"🏷 Аукцион: {bid.auction.title}\n"
+            f"🏷 Аукцион: {escape_html(bid.auction.title)}\n"  # Экранирование
             f"💰 Сумма ставки: {bid.amount} ₽\n\n"
             f"Текущая цена аукциона обновлена.",
             parse_mode="HTML"
         )
 
         await callback.answer()
-
