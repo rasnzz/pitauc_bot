@@ -11,46 +11,54 @@ def get_confirmation_keyboard():
     return builder.as_markup()
 
 def get_user_menu_keyboard():
-    """Меню пользователя"""
+    """Меню пользователя - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     builder = InlineKeyboardBuilder()
-    builder.add(
-        InlineKeyboardButton(text="📋 Мои ставки", callback_data="my_bids"),
-        InlineKeyboardButton(text="🏆 Мои выигрыши", callback_data="my_wins"),
-        InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications"),
-        InlineKeyboardButton(text="❓ Помощь", callback_data="help"),
+    builder.row(
+        InlineKeyboardButton(text="📋 Мои ставки", callback_data="user_my_bids"),
+        InlineKeyboardButton(text="🏆 Мои выигрыши", callback_data="user_my_wins"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔔 Уведомления", callback_data="user_notifications"),
+        InlineKeyboardButton(text="❓ Помощь", callback_data="user_help"),
+    )
+    builder.row(
         InlineKeyboardButton(text="📞 Связаться", url="https://t.me/pd56oren")
     )
-    builder.adjust(1)
     return builder.as_markup()
 
 def get_channel_auction_keyboard(auction_id: int, next_bid_amount: float):
     """Клавиатура для аукциона в КАНАЛЕ (только ставка, подписка и связь)"""
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(
-            text=f"✅ Сделать ставку {next_bid_amount} ₽", 
+            text=f"✅ Сделать ставку {next_bid_amount:.2f} ₽", 
             callback_data=f"bid:{auction_id}:{next_bid_amount}"
-        ),
+        )
+    )
+    builder.row(
         InlineKeyboardButton(
             text="🔔 Подписаться на уведомления", 
             callback_data=f"subscribe:{auction_id}"
-        ),
+        )
+    )
+    builder.row(
         InlineKeyboardButton(
             text="📞 Связаться с админом", 
             url="https://t.me/pd56oren"
         )
     )
-    builder.adjust(1)
     return builder.as_markup()
 
 def get_bot_auction_keyboard(auction_id: int, next_bid_amount: float):
     """Клавиатура для аукциона в БОТЕ (полный функционал)"""
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(
-            text=f"✅ Сделать ставку {next_bid_amount} ₽", 
+            text=f"✅ Сделать ставку {next_bid_amount:.2f} ₽", 
             callback_data=f"bid:{auction_id}:{next_bid_amount}"
-        ),
+        )
+    )
+    builder.row(
         InlineKeyboardButton(
             text="📊 Топ-3 ставки", 
             callback_data=f"top3:{auction_id}"
@@ -58,20 +66,23 @@ def get_bot_auction_keyboard(auction_id: int, next_bid_amount: float):
         InlineKeyboardButton(
             text="📋 История ставок", 
             callback_data=f"history:{auction_id}"
-        ),
+        )
+    )
+    builder.row(
         InlineKeyboardButton(
             text="🔔 Подписаться на уведомления", 
             callback_data=f"subscribe:{auction_id}"
         )
     )
-    builder.adjust(1)
     return builder.as_markup()
 
 def get_auction_history_keyboard(auction_id: int):
     """Клавиатура для истории ставок"""
     builder = InlineKeyboardBuilder()
-    builder.add(
-        InlineKeyboardButton(text="🔙 Назад к аукциону", callback_data=f"back_to_auction:{auction_id}"),
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад к аукциону", callback_data=f"back_to_auction:{auction_id}")
+    )
+    builder.row(
         InlineKeyboardButton(text="📞 Связаться", url="https://t.me/pd56oren")
     )
     return builder.as_markup()
@@ -79,18 +90,21 @@ def get_auction_history_keyboard(auction_id: int):
 def get_cancel_bid_keyboard(bid_id: int):
     """Клавиатура для отмены ставки"""
     builder = InlineKeyboardBuilder()
-    builder.add(
-        InlineKeyboardButton(text="✅ Да, отменить ставку", callback_data=f"cancel_bid_confirm:{bid_id}"),
+    builder.row(
+        InlineKeyboardButton(text="✅ Да, отменить ставку", callback_data=f"cancel_bid_confirm:{bid_id}")
+    )
+    builder.row(
         InlineKeyboardButton(text="❌ Нет, оставить", callback_data="cancel_bid_cancel")
     )
-    builder.adjust(1)
     return builder.as_markup()
 
 def get_unsubscribe_keyboard(auction_id: int):
     """Клавиатура для отписки от аукциона"""
     builder = InlineKeyboardBuilder()
-    builder.add(
-        InlineKeyboardButton(text="🔕 Отписаться от уведомлений", callback_data=f"unsubscribe:{auction_id}"),
+    builder.row(
+        InlineKeyboardButton(text="🔕 Отписаться от уведомлений", callback_data=f"unsubscribe:{auction_id}")
+    )
+    builder.row(
         InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_to_auction:{auction_id}")
     )
     return builder.as_markup()
@@ -98,50 +112,67 @@ def get_unsubscribe_keyboard(auction_id: int):
 def get_admin_limits_keyboard():
     """Клавиатура для управления лимитами"""
     builder = InlineKeyboardBuilder()
-    builder.add(
-        InlineKeyboardButton(text="📊 Статистика лимитов", callback_data="admin_limits"),
-        InlineKeyboardButton(text="⚙️ Изменить лимиты", callback_data="admin_limits_edit"),
-        InlineKeyboardButton(text="📋 Логи действий", callback_data="admin_actions_log"),
+    builder.row(
+        InlineKeyboardButton(text="📊 Статистика лимитов", callback_data="admin_limits_stats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Изменить лимиты", callback_data="admin_limits_edit")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Логи действий", callback_data="admin_actions_log")
+    )
+    builder.row(
         InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
     )
-    builder.adjust(1)
     return builder.as_markup()
 
 def get_admin_main_keyboard():
-    """Главное меню админа"""
+    """Главное меню админа - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(text="➕ Создать аукцион", callback_data="admin_create"),
-        InlineKeyboardButton(text="📋 Активные аукционы", callback_data="admin_active"),
+        InlineKeyboardButton(text="📋 Активные аукционы", callback_data="admin_active")
+    )
+    builder.row(
         InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin_stats_all"),
-        InlineKeyboardButton(text="⚖️ Лимиты и правила", callback_data="admin_limits"),
+        InlineKeyboardButton(text="⚖️ Лимиты и правила", callback_data="admin_limits")
+    )
+    builder.row(
         InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
-        InlineKeyboardButton(text="💰 Финансы", callback_data="admin_finance"),
+        InlineKeyboardButton(text="💰 Финансы", callback_data="admin_finance")
+    )
+    builder.row(
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")
     )
-    builder.adjust(2)
     return builder.as_markup()
 
 def get_admin_stats_keyboard():
     """Клавиатура статистики"""
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(text="📈 Графики", callback_data="admin_charts"),
-        InlineKeyboardButton(text="📋 Экспорт", callback_data="admin_export"),
+        InlineKeyboardButton(text="📋 Экспорт", callback_data="admin_export")
+    )
+    builder.row(
         InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
     )
     return builder.as_markup()
 
 def get_admin_auction_keyboard(auction_id: int):
-    """Клавиатура для админа управления аукционом"""
+    """Клавиатура для админа управления аукционом - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     builder = InlineKeyboardBuilder()
-    builder.add(
+    builder.row(
         InlineKeyboardButton(text="🛑 Завершить досрочно", callback_data=f"admin_end:{auction_id}"),
-        InlineKeyboardButton(text="✏️ Редактировать лот", callback_data=f"admin_edit:{auction_id}"),
-        InlineKeyboardButton(text="📊 Статистика", callback_data=f"admin_stats:{auction_id}"),
-        InlineKeyboardButton(text="🗑️ Удалить аукцион", callback_data=f"admin_delete:{auction_id}"),
-        InlineKeyboardButton(text="📢 Анонсировать", callback_data=f"admin_announce:{auction_id}"),
-        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")
+        InlineKeyboardButton(text="✏️ Редактировать лот", callback_data=f"admin_edit:{auction_id}")
     )
-    builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text="📊 Статистика", callback_data=f"admin_stats:{auction_id}"),
+        InlineKeyboardButton(text="🗑️ Удалить аукцион", callback_data=f"admin_delete:{auction_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📢 Анонсировать", callback_data=f"admin_announce:{auction_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад в меню", callback_data="admin_back_menu")
+    )
     return builder.as_markup()
