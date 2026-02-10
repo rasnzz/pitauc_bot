@@ -321,86 +321,133 @@ class AuctionTimerManager:
         except Exception as e:
             logger.error(f"Ошибка при завершении аукциона #{auction_id}: {e}", exc_info=True)
     
-    async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
-        """Обновление сообщения в канале после завершения аукциона (ТОЛЬКО редактирование)"""
+    async def _update_channel_message_fixed(self, auction: Auction, top_bids=None, bids_count=0):
+    """Обновление сообщения в канале после завершения аукциона (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
+    try:
+        logger.info(f"🔄 Начинаю обновление сообщения для аукциона #{auction.id}")
+        
+        if not auction.channel_message_id:
+            logger.error(f"❌ Нет channel_message_id для аукциона #{auction.id}")
+            return
+        
+        if not self.bot:
+            logger.error(f"❌ Бот не установлен для обновления сообщения #{auction.id}")
+            return
+        
+        logger.info(f"📝 Обновляю сообщение в канале: ID={Config.CHANNEL_ID}, message_id={auction.channel_message_id}")
+        
+        # Получаем данные для сообщения
+        from utils.formatters import format_ended_auction_message
+        message_text = format_ended_auction_message(auction, top_bids, bids_count)
+        
+        # ОБРЕЗАЕМ сообщение если слишком длинное
+        if len(message_text) > 1024:
+            logger.warning(f"⚠️ Сообщение слишком длинное ({len(message_text)} символов), обрезаю...")
+            # Находим последний закрывающий тег перед 1024 символами
+            import re
+            truncated = message_text[:1024]
+            # Закрываем незакрытые HTML теги
+            open_tags = re.findall(r'<([^/][^>]*)>', truncated)
+            close_tags = re.findall(r'</([^>]+)>', truncated)
+            
+            tags_to_close = []
+            for tag in open_tags:
+                tag_name = tag.split()[0] if ' ' in tag else tag
+                if f'</{tag_name}>' not in truncated:
+                    tags_to_close.append(tag_name)
+            
+            # Закрываем теги в обратном порядке
+            for tag in reversed(tags_to_close):
+                truncated += f'</{tag}>'
+            
+            truncated += "..."
+            message_text = truncated
+        
+        logger.info(f"✅ Сообщение подготовлено, длина: {len(message_text)} символов")
+        
+        # Пытаемся определить тип сообщения (фото или текст)
+        # Пробуем сначала получить само сообщение
         try:
-            logger.info(f"🔄 Начинаю обновление сообщения для аукциона #{auction.id}")
+            original_message = await self.bot.get_message(
+                chat_id=Config.CHANNEL_ID,
+                message_id=auction.channel_message_id
+            )
             
-            if not auction.channel_message_id:
-                logger.error(f"❌ Нет channel_message_id для аукциона #{auction.id}")
-                return
+            has_photo = original_message.photo is not None
+            logger.info(f"📸 Тип сообщения: {'ФОТО' if has_photo else 'ТЕКСТ'}")
             
-            if not self.bot:
-                logger.error(f"❌ Бот не установлен для обновления сообщения #{auction.id}")
-                return
-            
-            logger.info(f"📝 Обновляю сообщение в канале для аукциона #{auction.id}, message_id={auction.channel_message_id}")
-            
-            # Формируем сообщение о завершенном аукционе
-            message_text = format_ended_auction_message(auction, top_bids, bids_count)
-            
-            logger.info(f"✅ Сообщение для аукциона #{auction.id} сформировано, длина: {len(message_text)} символов")
-            
-            # Проверяем, есть ли фото у аукциона
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось получить сообщение: {e}, пробую угадать тип...")
             has_photo = False
             try:
                 if auction.photos:
+                    import json
                     photos_list = json.loads(auction.photos)
-                    if photos_list and photos_list[0]:
-                        has_photo = True
+                    has_photo = bool(photos_list and photos_list[0])
+            except:
+                pass
+        
+        # Пытаемся обновить сообщение
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔄 Попытка {attempt + 1} из {max_retries}")
+                
+                if has_photo:
+                    # Пробуем обновить подпись к фото
+                    await self.bot.edit_message_caption(
+                        chat_id=Config.CHANNEL_ID,
+                        message_id=auction.channel_message_id,
+                        caption=message_text,
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"✅ Обновлена подпись к фото для аукциона #{auction.id}")
+                else:
+                    # Обновляем текстовое сообщение
+                    await self.bot.edit_message_text(
+                        chat_id=Config.CHANNEL_ID,
+                        message_id=auction.channel_message_id,
+                        text=message_text,
+                        parse_mode='HTML'
+                    )
+                    logger.info(f"✅ Обновлен текст для аукциона #{auction.id}")
+                
+                break  # Успешно
+                
             except Exception as e:
-                logger.error(f"❌ Ошибка при проверке фото аукциона #{auction.id}: {e}")
-            
-            logger.info(f"📸 Аукцион #{auction.id} имеет фото: {has_photo}")
-            
-            # Пытаемся обновить сообщение - ТОЛЬКО РЕДАКТИРОВАНИЕ
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"🔄 Попытка {attempt + 1} из {max_retries} для аукциона #{auction.id}")
-                    
-                    # Если это первая попытка, используем метод, соответствующий has_photo
-                    # Если вторая попытка, то меняем метод на противоположный
-                    current_has_photo = has_photo if attempt == 0 else not has_photo
-                    
-                    if current_has_photo:
-                        # Пробуем обновить подпись к фото
-                        await self.bot.edit_message_caption(
-                            chat_id=Config.CHANNEL_ID,
-                            message_id=auction.channel_message_id,
-                            caption=message_text,
-                            parse_mode='HTML'
-                        )
-                        logger.info(f"✅ Обновлена подпись к фото для аукциона #{auction.id}")
-                    else:
-                        # Обновляем текстовое сообщение
+                error_msg = str(e)
+                logger.error(f"❌ Попытка {attempt + 1} не удалась: {error_msg}")
+                
+                # Если первая попытка не удалась, меняем метод (фото/текст)
+                if attempt == 0:
+                    logger.info(f"🔄 Меняю метод (было {'фото' if has_photo else 'текст'})")
+                    has_photo = not has_photo
+                elif attempt == 1:
+                    # Вторая попытка тоже не удалась, пробуем удалить клавиатуру если есть
+                    logger.info("🔄 Пробую обновить без клавиатуры...")
+                    try:
                         await self.bot.edit_message_text(
                             chat_id=Config.CHANNEL_ID,
                             message_id=auction.channel_message_id,
                             text=message_text,
-                            parse_mode='HTML'
+                            parse_mode='HTML',
+                            reply_markup=None  # Убираем клавиатуру
                         )
-                        logger.info(f"✅ Обновлен текст для аукциона #{auction.id}")
-                    
-                    break  # Успешно, выходим из цикла
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"❌ Попытка {attempt + 1} не удалась для аукциона #{auction.id}: {error_msg}")
-                    
-                    # Если это последняя попытка, то выходим из цикла и не пробуем больше
-                    if attempt == max_retries - 1:
-                        logger.error(f"❌ Все попытки редактирования сообщения для аукциона #{auction.id} провалились")
-                    else:
-                        # Ждем перед следующей попыткой (экспоненциальная задержка)
-                        wait_time = 2 ** (attempt + 1)  # 2, 4, 8 секунд
-                        logger.info(f"⏳ Жду {wait_time} секунд перед следующей попыткой...")
-                        await asyncio.sleep(wait_time)
-            
-            logger.info(f"✅ Обновление сообщения для аукциона #{auction.id} завершено")
+                        logger.info(f"✅ Обновлено без клавиатуры")
+                        break
+                    except Exception as e2:
+                        logger.error(f"❌ Не удалось обновить без клавиатуры: {e2}")
                 
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка при обновлении сообщения в канале для завершенного аукциона #{auction.id}: {e}", exc_info=True)
+                # Ждем перед следующей попыткой
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** (attempt + 1)
+                    logger.info(f"⏳ Жду {wait_time} секунд...")
+                    await asyncio.sleep(wait_time)
+        
+        logger.info(f"✅ Обновление завершено для аукциона #{auction.id}")
+            
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при обновлении сообщения: {e}")
     
     async def _notify_winner(self, auction_id: int, winner_user_id: int):
         """Уведомление победителя"""
