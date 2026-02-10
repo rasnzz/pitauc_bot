@@ -6,7 +6,7 @@ import datetime
 import logging
 import traceback
 import asyncio
-import json  # ДОБАВЛЕНО
+import json  # Импорт уже есть и он используется
 
 from database.database import get_db
 from database.models import Auction, Bid, User, AuctionSubscription, Notification
