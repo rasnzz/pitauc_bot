@@ -13,7 +13,13 @@ from middlewares.user_check import UserCheckMiddleware
 from utils.backup import backup_manager
 from utils.periodic_updater import periodic_updater
 from utils.timer import auction_timer_manager
-from utils.channel_updater import get_channel_updater  # НОВЫЙ ИМПОРТ
+# Импорт может быть ошибочным, если файл не создан
+try:
+    from utils.channel_updater import get_channel_updater
+    CHANNEL_UPDATER_AVAILABLE = True
+except ImportError:
+    CHANNEL_UPDATER_AVAILABLE = False
+    logging.warning("ChannelUpdater не найден. Обновление сообщений в канале недоступно.")
 
 # Используем uvloop для лучшей производительности асинхронных операций
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -51,6 +57,10 @@ async def check_expired_auctions_on_startup():
 
 async def fix_all_channel_messages_on_startup(bot):
     """Исправление всех сообщений в канале при запуске"""
+    if not CHANNEL_UPDATER_AVAILABLE:
+        logger.warning("ChannelUpdater недоступен, пропускаю обновление сообщений в канале")
+        return
+    
     logger.info("🔄 Проверка и исправление всех сообщений в канале...")
     try:
         updater = get_channel_updater(bot)
@@ -90,7 +100,8 @@ async def main():
     auction_timer_manager.set_bot(bot)
     
     # Инициализируем ChannelUpdater
-    get_channel_updater(bot)
+    if CHANNEL_UPDATER_AVAILABLE:
+        get_channel_updater(bot)
     
     # Используем MemoryStorage для FSM
     storage = MemoryStorage()
