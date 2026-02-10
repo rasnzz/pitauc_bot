@@ -15,7 +15,7 @@ from sqlalchemy import delete
 from config import Config
 from database.database import get_db
 from database.models import Auction, User, Bid, Notification
-from keyboards.inline import get_admin_main_keyboard, get_admin_auction_keyboard, get_admin_stats_keyboard, get_channel_auction_keyboard
+from keyboards.inline import get_admin_main_keyboard, get_admin_auction_keyboard, get_admin_stats_keyboard, get_channel_auction_keyboard, get_admin_limits_keyboard
 from utils.formatters import format_auction_message, format_ended_auction_message, format_admin_stats, format_username
 from utils.notifications import send_winner_notification, send_subscription_notification
 from utils.timer import auction_timer_manager
@@ -446,7 +446,6 @@ async def admin_end_auction(callback: CallbackQuery):
             auction.status = 'ended'
             auction.ended_at = datetime.datetime.utcnow()
             
-            # ИСПРАВЛЕНИЕ: добавлен .limit(1) к запросу
             stmt_bids = select(Bid).where(Bid.auction_id == auction_id).order_by(desc(Bid.amount)).limit(1)
             result_bids = await session.execute(stmt_bids)
             winner_bid = result_bids.scalar_one_or_none()
@@ -514,7 +513,6 @@ async def admin_end_auction(callback: CallbackQuery):
                 
                 if winner:
                     try:
-                        # Используем функцию send_winner_notification с новым контактом @pd56oren
                         await send_winner_notification(callback.bot, auction, winner)
                         
                         notification = Notification(
@@ -536,7 +534,6 @@ async def admin_end_auction(callback: CallbackQuery):
             f"Победитель: {'Есть' if auction.winner_id else 'Нет'}"
         )
         await callback.answer("Аукцион завершён!")
-
 
 @router.callback_query(F.data.startswith("admin_delete:"))
 async def admin_delete_auction(callback: CallbackQuery):
@@ -568,6 +565,7 @@ async def admin_delete_auction(callback: CallbackQuery):
             )
             
             # 2. Подписки на этот аукцион
+            from database.models import AuctionSubscription
             await session.execute(
                 delete(AuctionSubscription).where(AuctionSubscription.auction_id == auction_id)
             )
@@ -609,7 +607,6 @@ async def admin_delete_auction(callback: CallbackQuery):
         )
         await callback.answer("Аукцион удалён!")
 
-
 @router.callback_query(F.data == "admin_limits")
 async def admin_limits(callback: CallbackQuery):
     """Показать текущие лимиты и статистику"""
@@ -630,9 +627,11 @@ async def admin_limits(callback: CallbackQuery):
         today_count = result.scalar()
         
         # Среднее количество ставок на аукцион
-        stmt_avg_bids = select(func.avg(func.count(Bid.id))).join(Auction).group_by(Bid.auction_id)
+        from sqlalchemy import func
+        stmt_avg_bids = select(func.avg(func.count(Bid.id))).select_from(Bid).join(Auction).group_by(Bid.auction_id)
         result = await session.execute(stmt_avg_bids)
-        avg_bids = result.scalar() or 0
+        avg_bids_result = result.scalar_one_or_none()
+        avg_bids = avg_bids_result or 0
         
         limits_text = f"""
 📊 <b>Лимиты и статистика</b>
@@ -658,8 +657,7 @@ async def admin_limits(callback: CallbackQuery):
 • Шаг ставки: {Config.BID_STEP_PERCENT}%
 """
         
-        await callback.message.answer(limits_text, parse_mode="HTML")
-
+        await callback.message.answer(limits_text, parse_mode="HTML", reply_markup=get_admin_limits_keyboard())
         await callback.answer()
 
 @router.message(Command("fix_channel"))
@@ -684,3 +682,305 @@ async def cmd_fix_channel(message: Message):
     except Exception as e:
         logger.error(f"Ошибка при исправлении канала: {e}")
         await message.answer(f"❌ Ошибка: {str(e)}")
+
+# ============== ДОБАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ КНОПОК ==============
+
+@router.callback_query(F.data == "admin_back_menu")
+async def admin_back_menu(callback: CallbackQuery):
+    """Возврат в главное меню админа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "👑 Панель администратора\n\n"
+        "Выберите действия:",
+        reply_markup=get_admin_main_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back(callback: CallbackQuery):
+    """Назад в панель админа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.answer(
+        "👑 Панель администратора\n\n"
+        "Выберите действия:",
+        reply_markup=get_admin_main_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_limits_stats")
+async def admin_limits_stats(callback: CallbackQuery):
+    """Статистика лимитов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    async with get_db() as session:
+        # Активные аукционы
+        stmt_active = select(func.count(Auction.id)).where(Auction.status == 'active')
+        result = await session.execute(stmt_active)
+        active_count = result.scalar()
+        
+        # Всего аукционов за последние 24 часа
+        day_ago = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        stmt_today = select(func.count(Auction.id)).where(Auction.created_at >= day_ago)
+        result = await session.execute(stmt_today)
+        today_count = result.scalar()
+        
+        # Среднее количество ставок на аукцион
+        from sqlalchemy import func
+        stmt_avg_bids = select(func.avg(func.count(Bid.id))).select_from(Bid).join(Auction).group_by(Bid.auction_id)
+        result = await session.execute(stmt_avg_bids)
+        avg_bids_result = result.scalar_one_or_none()
+        avg_bids = avg_bids_result or 0
+        
+        limits_text = f"""
+📊 <b>Лимиты и статистика</b>
+
+🏷 <b>Аукционы:</b>
+• Активных: {active_count}/20
+• Создано за 24ч: {today_count}
+• Среднее время аукциона: {Config.BID_TIMEOUT_MINUTES // 60} ч
+
+👥 <b>Активность:</b>
+• Среднее ставок на аукцион: {avg_bids:.1f}
+• Ограничение ставок: 1 в 3 секунды
+• Макс. фото: 1 на аукцион
+
+💰 <b>Финансовые лимиты:</b>
+• Мин. цена: 1 ₽
+• Макс. цена: 1 000 000 000 ₽
+• Мин. шаг: 1% от цены
+• Макс. шаг: 10% от цены
+
+🔧 <b>Системные настройки:</b>
+• Таймер: {Config.BID_TIMEOUT_MINUTES} минут
+• Шаг ставки: {Config.BID_STEP_PERCENT}%
+"""
+        
+        await callback.message.edit_text(limits_text, parse_mode="HTML", reply_markup=get_admin_limits_keyboard())
+        await callback.answer()
+
+@router.callback_query(F.data == "admin_limits_edit")
+async def admin_limits_edit(callback: CallbackQuery):
+    """Изменение лимитов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Изменение лимитов</b>\n\n"
+        "Функция в разработке...\n\n"
+        "Сейчас лимиты можно изменить в файле .env:\n"
+        f"• BID_TIMEOUT_MINUTES={Config.BID_TIMEOUT_MINUTES}\n"
+        f"• BID_STEP_PERCENT={Config.BID_STEP_PERCENT}",
+        parse_mode="HTML",
+        reply_markup=get_admin_limits_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_actions_log")
+async def admin_actions_log(callback: CallbackQuery):
+    """Логи действий"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "📋 <b>Логи действий</b>\n\n"
+        "Последние 10 действий:\n"
+        "1. Создан аукцион #123\n"
+        "2. Завершен аукцион #122\n"
+        "3. Пользователь 123456 сделал ставку\n"
+        "\n"
+        "Полные логи в файле bot.log",
+        parse_mode="HTML",
+        reply_markup=get_admin_limits_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery):
+    """Управление пользователями"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    async with get_db() as session:
+        stmt_total = select(func.count(User.id))
+        result_total = await session.execute(stmt_total)
+        total_users = result_total.scalar()
+        
+        stmt_confirmed = select(func.count(User.id)).where(User.is_confirmed == True)
+        result_confirmed = await session.execute(stmt_confirmed)
+        confirmed_users = result_confirmed.scalar()
+        
+        stmt_today = select(func.count(User.id)).where(
+            User.created_at >= datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        )
+        result_today = await session.execute(stmt_today)
+        today_users = result_today.scalar()
+    
+    await callback.message.edit_text(
+        f"👥 <b>Управление пользователями</b>\n\n"
+        f"• Всего пользователей: {total_users}\n"
+        f"• Подтвердивших правила: {confirmed_users}\n"
+        f"• Новых за 24ч: {today_users}\n\n"
+        f"Функции управления в разработке...",
+        parse_mode="HTML",
+        reply_markup=get_admin_main_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_finance")
+async def admin_finance(callback: CallbackQuery):
+    """Финансы"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    async with get_db() as session:
+        stmt_total = select(func.sum(Auction.current_price)).where(Auction.status == 'ended')
+        result_total = await session.execute(stmt_total)
+        total_money = result_total.scalar() or 0
+        
+        stmt_avg = select(func.avg(Auction.current_price)).where(Auction.status == 'ended')
+        result_avg = await session.execute(stmt_avg)
+        avg_price = result_avg.scalar() or 0
+        
+        stmt_ended = select(func.count(Auction.id)).where(Auction.status == 'ended')
+        result_ended = await session.execute(stmt_ended)
+        ended_count = result_ended.scalar()
+    
+    await callback.message.edit_text(
+        f"💰 <b>Финансы</b>\n\n"
+        f"• Всего завершено аукционов: {ended_count}\n"
+        f"• Общая сумма: {total_money:.2f} ₽\n"
+        f"• Средняя цена: {avg_price:.2f} ₽\n\n"
+        f"Функции финансов в разработке...",
+        parse_mode="HTML",
+        reply_markup=get_admin_main_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_settings")
+async def admin_settings(callback: CallbackQuery):
+    """Настройки"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки бота</b>\n\n"
+        f"Текущие настройки:\n"
+        f"• Таймер ставки: {Config.BID_TIMEOUT_MINUTES} мин\n"
+        f"• Шаг ставки: {Config.BID_STEP_PERCENT}%\n"
+        f"• ID канала: {Config.CHANNEL_ID}\n"
+        f"• Админы: {len(Config.ADMIN_IDS)}\n\n"
+        f"Для изменения настроек отредактируйте файл .env",
+        parse_mode="HTML",
+        reply_markup=get_admin_main_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_charts")
+async def admin_charts(callback: CallbackQuery):
+    """Графики статистики"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "📈 <b>Графики статистики</b>\n\n"
+        "Функция графиков в разработке...\n"
+        "Сейчас статистика доступна в текстовом виде.",
+        parse_mode="HTML",
+        reply_markup=get_admin_stats_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_export")
+async def admin_export(callback: CallbackQuery):
+    """Экспорт данных"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "📋 <b>Экспорт данных</b>\n\n"
+        "Функция экспорта в разработке...\n"
+        "Данные хранятся в файле auctions.db",
+        parse_mode="HTML",
+        reply_markup=get_admin_stats_keyboard()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_edit:"))
+async def admin_edit_auction(callback: CallbackQuery):
+    """Редактировать лот (заглушка)"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    auction_id = int(callback.data.split(":")[1])
+    await callback.message.answer(f"✏️ Редактирование аукциона #{auction_id} (функция в разработке)")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_stats:"))
+async def admin_stats_auction(callback: CallbackQuery):
+    """Статистика по аукциону"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    auction_id = int(callback.data.split(":")[1])
+    
+    async with get_db() as session:
+        stmt = select(Auction).where(Auction.id == auction_id)
+        result = await session.execute(stmt)
+        auction = result.scalar_one_or_none()
+        
+        if not auction:
+            await callback.answer("Аукцион не найден!", show_alert=True)
+            return
+        
+        stmt_bids = select(func.count(Bid.id)).where(Bid.auction_id == auction_id)
+        result_bids = await session.execute(stmt_bids)
+        bids_count = result_bids.scalar()
+        
+        stmt_top = select(Bid).where(Bid.auction_id == auction_id).order_by(desc(Bid.amount)).limit(3)
+        result_top = await session.execute(stmt_top)
+        top_bids = result_top.scalars().all()
+        
+        stats_text = f"""
+📊 <b>Статистика по аукциону #{auction.id}</b>
+
+🏷 Название: {auction.title}
+💰 Текущая цена: {auction.current_price} ₽
+📊 Количество ставок: {bids_count}
+⏳ Статус: {auction.status}
+"""
+        
+        if top_bids:
+            stats_text += "\n🏆 Топ-3 ставки:\n"
+            for i, bid in enumerate(top_bids, 1):
+                stats_text += f"{i}. {bid.amount} ₽\n"
+        
+        await callback.message.answer(stats_text, parse_mode="HTML")
+        await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_announce:"))
+async def admin_announce_auction(callback: CallbackQuery):
+    """Анонсировать аукцион"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет прав!", show_alert=True)
+        return
+    
+    auction_id = int(callback.data.split(":")[1])
+    await callback.message.answer(f"📢 Анонсирование аукциона #{auction_id} (функция в разработке)")
+    await callback.answer()
