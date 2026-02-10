@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Обработка команды /start"""
+    logger.info(f"Команда /start от {message.from_user.id}")
+    
     async with get_db() as session:
         # Проверяем, есть ли пользователь в базе
         stmt = select(User).where(User.telegram_id == message.from_user.id)
@@ -35,6 +37,7 @@ async def cmd_start(message: Message):
             )
             session.add(user)
             await session.commit()
+            logger.info(f"Создан новый пользователь {message.from_user.id}")
         
         if user.is_confirmed:
             await message.answer(
@@ -60,8 +63,122 @@ async def cmd_start(message: Message):
                 reply_markup=get_confirmation_keyboard()
             )
 
+# =================== КОМАНДЫ ===================
+
 @router.message(Command("auctions"))
 async def cmd_auctions(message: Message):
+    """Показать активные аукционы"""
+    await show_auctions(message)
+
+@router.message(Command("my_bids"))
+async def cmd_my_bids(message: Message):
+    """Показать все ставки пользователя"""
+    await show_user_bids(message)
+
+@router.message(Command("my_wins"))
+async def cmd_my_wins(message: Message):
+    """Показать выигранные аукционы"""
+    await show_user_wins(message)
+
+@router.message(Command("notifications"))
+async def cmd_notifications(message: Message):
+    """Показать уведомления пользователя"""
+    await show_user_notifications(message)
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Помощь"""
+    await show_help(message)
+
+@router.message(Command("cancel_bid"))
+async def cmd_cancel_bid(message: Message):
+    """Отмена последней ставки пользователя"""
+    await cancel_bid_start(message)
+
+# =================== ОБРАБОТЧИКИ КНОПОК ===================
+
+@router.callback_query(F.data == "user_my_bids")
+async def callback_user_my_bids(callback: CallbackQuery):
+    """Мои ставки (обработчик кнопки)"""
+    logger.info(f"Нажата кнопка 'Мои ставки' от {callback.from_user.id}")
+    await show_user_bids(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data == "user_my_wins")
+async def callback_user_my_wins(callback: CallbackQuery):
+    """Мои выигрыши (обработчик кнопки)"""
+    logger.info(f"Нажата кнопка 'Мои выигрыши' от {callback.from_user.id}")
+    await show_user_wins(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data == "user_notifications")
+async def callback_user_notifications(callback: CallbackQuery):
+    """Уведомления (обработчик кнопки)"""
+    logger.info(f"Нажата кнопка 'Уведомления' от {callback.from_user.id}")
+    await show_user_notifications(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data == "user_help")
+async def callback_user_help(callback: CallbackQuery):
+    """Помощь (обработчик кнопки)"""
+    logger.info(f"Нажата кнопка 'Помощь' от {callback.from_user.id}")
+    await show_help(callback.message)
+    await callback.answer()
+
+@router.callback_query(F.data == "confirm_rules")
+async def confirm_rules(callback: CallbackQuery):
+    """Подтверждение правил пользователем"""
+    logger.info(f"Подтверждение правил от {callback.from_user.id}")
+    
+    async with get_db() as session:
+        stmt = select(User).where(User.telegram_id == callback.from_user.id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if user:
+            user.is_confirmed = True
+            await session.commit()
+            
+            await callback.message.edit_text(
+                "🎉 Отлично! Теперь вы можете участвовать в аукционах!\n\n"
+                "📢 Перейдите в канал и нажимайте на кнопки под постами для участия.",
+                reply_markup=get_user_menu_keyboard()
+            )
+            await callback.answer("Правила подтверждены!")
+        else:
+            await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+
+@router.callback_query(F.data == "cancel_rules")
+async def cancel_rules(callback: CallbackQuery):
+    """Отказ от правил"""
+    logger.info(f"Отказ от правил от {callback.from_user.id}")
+    
+    await callback.message.edit_text(
+        "❌ Вы отказались от правил участия в аукционах.\n\n"
+        "Если передумаете, просто снова напишите /start"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "cancel_bid_cancel")
+async def cancel_bid_cancel_handler(callback: CallbackQuery):
+    """Отмена отмены ставки"""
+    logger.info(f"Отмена отмены ставки от {callback.from_user.id}")
+    
+    await callback.message.edit_text("✅ Отмена ставки отменена. Ваша ставка сохранена.")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("cancel_bid_confirm:"))
+async def cancel_bid_confirm(callback: CallbackQuery):
+    """Подтверждение отмены ставки"""
+    bid_id = int(callback.data.split(":")[1])
+    logger.info(f"Подтверждение отмены ставки #{bid_id} от {callback.from_user.id}")
+    
+    await process_cancel_bid(callback, bid_id)
+    await callback.answer()
+
+# =================== ОБЩИЕ ФУНКЦИИ ===================
+
+async def show_auctions(message: Message):
     """Показать активные аукционы"""
     async with get_db() as session:
         stmt = select(Auction).where(
@@ -76,12 +193,10 @@ async def cmd_auctions(message: Message):
             return
         
         for auction in auctions:
-            # Получаем количество ставок
             stmt_bids = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
             result_bids = await session.execute(stmt_bids)
             bids_count = result_bids.scalar()
             
-            # Экранирование HTML
             title = escape_html(auction.title)
             description = escape_html(auction.description[:100] + "...") if auction.description else ""
             
@@ -96,7 +211,6 @@ async def cmd_auctions(message: Message):
             
             next_bid_amount = auction.current_price + auction.step_price
             
-            # Пытаемся отправить фото, если оно есть
             try:
                 if auction.photo_list and auction.photo_list[0]:
                     await message.bot.send_photo(
@@ -120,21 +234,10 @@ async def cmd_auctions(message: Message):
                     reply_markup=get_bot_auction_keyboard(auction.id, next_bid_amount)
                 )
 
-@router.message(Command("my_bids"))
-async def cmd_my_bids(message: Message):
-    """Показать все ставки пользователя"""
-    await show_user_bids(message)
-
-@router.callback_query(F.data == "user_my_bids")
-async def callback_user_my_bids(callback: CallbackQuery):
-    """Мои ставки (обработчик кнопки)"""
-    await show_user_bids(callback.message)
-    await callback.answer()
-
 async def show_user_bids(message: Message):
-    """Общая функция показа ставок пользователя"""
+    """Показать ставки пользователя"""
     async with get_db() as session:
-        # Сначала находим пользователя по telegram_id
+        # Находим пользователя по telegram_id
         stmt_user = select(User).where(User.telegram_id == message.from_user.id)
         result_user = await session.execute(stmt_user)
         user = result_user.scalar_one_or_none()
@@ -153,7 +256,7 @@ async def show_user_bids(message: Message):
             await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
             return
         
-        # Теперь находим ставки по user.id (ID в базе данных)
+        # Находим ставки по user.id
         stmt = select(Bid).join(Auction).where(
             Bid.user_id == user.id
         ).order_by(desc(Bid.created_at)).options(
@@ -172,21 +275,10 @@ async def show_user_bids(message: Message):
             parse_mode="HTML"
         )
 
-@router.message(Command("my_wins"))
-async def cmd_my_wins(message: Message):
-    """Показать выигранные аукционы"""
-    await show_user_wins(message)
-
-@router.callback_query(F.data == "user_my_wins")
-async def callback_user_my_wins(callback: CallbackQuery):
-    """Мои выигрыши (обработчик кнопки)"""
-    await show_user_wins(callback.message)
-    await callback.answer()
-
 async def show_user_wins(message: Message):
-    """Общая функция показа выигранных аукционов"""
+    """Показать выигранные аукционы"""
     async with get_db() as session:
-        # Сначала находим пользователя по telegram_id
+        # Находим пользователя по telegram_id
         stmt_user = select(User).where(User.telegram_id == message.from_user.id)
         result_user = await session.execute(stmt_user)
         user = result_user.scalar_one_or_none()
@@ -205,7 +297,7 @@ async def show_user_wins(message: Message):
             await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
             return
         
-        # Теперь находим выигранные аукционы по user.id
+        # Находим выигранные аукционы по user.id
         stmt = select(Auction).where(
             Auction.status == 'ended',
             Auction.winner_id == user.id
@@ -220,28 +312,17 @@ async def show_user_wins(message: Message):
         
         wins_text = "🏆 <b>Ваши выигранные аукционы:</b>\n\n"
         for auction in auctions:
-            title = escape_html(auction.title)  # Экранирование
+            title = escape_html(auction.title)
             wins_text += f"• <b>{title}</b>\n"
             wins_text += f"  💰 Цена: {auction.current_price} ₽\n"
             wins_text += f"  ⏰ Завершен: {auction.ended_at.strftime('%d.%m.%Y %H:%M')}\n\n"
         
         await message.answer(wins_text, parse_mode="HTML")
 
-@router.message(Command("notifications"))
-async def cmd_notifications(message: Message):
-    """Показать уведомления пользователя"""
-    await show_user_notifications(message)
-
-@router.callback_query(F.data == "user_notifications")
-async def callback_user_notifications(callback: CallbackQuery):
-    """Уведомления (обработчик кнопки)"""
-    await show_user_notifications(callback.message)
-    await callback.answer()
-
 async def show_user_notifications(message: Message):
-    """Общая функция показа уведомлений"""
+    """Показать уведомления пользователя"""
     async with get_db() as session:
-        # Сначала находим пользователя по telegram_id
+        # Находим пользователя по telegram_id
         stmt_user = select(User).where(User.telegram_id == message.from_user.id)
         result_user = await session.execute(stmt_user)
         user = result_user.scalar_one_or_none()
@@ -283,19 +364,8 @@ async def show_user_notifications(message: Message):
             parse_mode="HTML"
         )
 
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    """Помощь"""
-    await show_help(message)
-
-@router.callback_query(F.data == "user_help")
-async def callback_user_help(callback: CallbackQuery):
-    """Помощь (обработчик кнопки)"""
-    await show_help(callback.message)
-    await callback.answer()
-
 async def show_help(message: Message):
-    """Общая функция показа помощи"""
+    """Показать помощь"""
     help_text = """
 🤖 <b>Помощь по боту аукционов</b>
 
@@ -321,46 +391,8 @@ async def show_help(message: Message):
 """
     await message.answer(help_text, parse_mode="HTML")
 
-@router.callback_query(F.data == "confirm_rules")
-async def confirm_rules(callback: CallbackQuery):
-    """Подтверждение правил пользователем"""
-    async with get_db() as session:
-        stmt = select(User).where(User.telegram_id == callback.from_user.id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if user:
-            user.is_confirmed = True
-            await session.commit()
-            
-            await callback.message.edit_text(
-                "🎉 Отлично! Теперь вы можете участвовать в аукционах!\n\n"
-                "📢 Перейдите в канал и нажимайте на кнопки под постами для участия.\n\n"
-                "📋 Ваши команды:",
-                reply_markup=get_user_menu_keyboard()
-            )
-            await callback.answer("Правила подтверждены!")
-        else:
-            await callback.answer("Ошибка: пользователь не найден", show_alert=True)
-
-@router.callback_query(F.data == "cancel_rules")
-async def cancel_rules(callback: CallbackQuery):
-    """Отказ от правил"""
-    await callback.message.edit_text(
-        "❌ Вы отказались от правил участия в аукционах.\n\n"
-        "Если передумаете, просто снова напишите /start"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "cancel_bid_cancel")
-async def cancel_bid_cancel_handler(callback: CallbackQuery):
-    """Отмена отмены ставки"""
-    await callback.message.edit_text("✅ Отмена ставки отменена. Ваша ставка сохранена.")
-    await callback.answer()
-
-@router.message(Command("cancel_bid"))
-async def cmd_cancel_bid(message: Message):
-    """Отмена последней ставки пользователя"""
+async def cancel_bid_start(message: Message):
+    """Начало отмены ставки"""
     async with get_db() as session:
         # Находим пользователя по telegram_id
         stmt_user = select(User).where(User.telegram_id == message.from_user.id)
@@ -425,11 +457,8 @@ async def cmd_cancel_bid(message: Message):
             reply_markup=get_cancel_bid_keyboard(last_bid.id)
         )
 
-@router.callback_query(F.data.startswith("cancel_bid_confirm:"))
-async def cancel_bid_confirm(callback: CallbackQuery):
-    """Подтверждение отмены ставки"""
-    bid_id = int(callback.data.split(":")[1])
-    
+async def process_cancel_bid(callback: CallbackQuery, bid_id: int):
+    """Обработка отмены ставки"""
     async with get_db() as session:
         async with session.begin():
             # Находим ставку
@@ -504,5 +533,3 @@ async def cancel_bid_confirm(callback: CallbackQuery):
             f"Текущая цена аукциона обновлена.",
             parse_mode="HTML"
         )
-
-        await callback.answer()
