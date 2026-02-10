@@ -9,7 +9,7 @@ import datetime
 from database.database import get_db
 from database.models import User, Bid, Auction, Notification
 from keyboards.inline import get_confirmation_keyboard, get_user_menu_keyboard, get_bot_auction_keyboard, get_cancel_bid_keyboard
-from utils.formatters import format_user_bids, format_notifications, escape_html  # ИСПРАВЛЕННЫЙ ИМПОРТ
+from utils.formatters import format_user_bids, format_notifications, escape_html
 from config import Config
 
 router = Router()
@@ -81,7 +81,7 @@ async def cmd_auctions(message: Message):
             result_bids = await session.execute(stmt_bids)
             bids_count = result_bids.scalar()
             
-            # Экранирование HTML - ИСПРАВЛЕНО (теперь импорт есть)
+            # Экранирование HTML
             title = escape_html(auction.title)
             description = escape_html(auction.description[:100] + "...") if auction.description else ""
             
@@ -125,9 +125,9 @@ async def cmd_my_bids(message: Message):
     """Показать все ставки пользователя"""
     await show_user_bids(message)
 
-@router.callback_query(F.data == "my_bids")
-async def callback_my_bids(callback: CallbackQuery):
-    """Показать все ставки пользователя (обработчик кнопки)"""
+@router.callback_query(F.data == "user_my_bids")
+async def callback_user_my_bids(callback: CallbackQuery):
+    """Мои ставки (обработчик кнопки)"""
     await show_user_bids(callback.message)
     await callback.answer()
 
@@ -177,9 +177,9 @@ async def cmd_my_wins(message: Message):
     """Показать выигранные аукционы"""
     await show_user_wins(message)
 
-@router.callback_query(F.data == "my_wins")
-async def callback_my_wins(callback: CallbackQuery):
-    """Показать выигранные аукционы (обработчик кнопки)"""
+@router.callback_query(F.data == "user_my_wins")
+async def callback_user_my_wins(callback: CallbackQuery):
+    """Мои выигрыши (обработчик кнопки)"""
     await show_user_wins(callback.message)
     await callback.answer()
 
@@ -232,9 +232,9 @@ async def cmd_notifications(message: Message):
     """Показать уведомления пользователя"""
     await show_user_notifications(message)
 
-@router.callback_query(F.data == "notifications")
-async def callback_notifications(callback: CallbackQuery):
-    """Показать уведомления пользователя (обработчик кнопки)"""
+@router.callback_query(F.data == "user_notifications")
+async def callback_user_notifications(callback: CallbackQuery):
+    """Уведомления (обработчик кнопки)"""
     await show_user_notifications(callback.message)
     await callback.answer()
 
@@ -288,8 +288,8 @@ async def cmd_help(message: Message):
     """Помощь"""
     await show_help(message)
 
-@router.callback_query(F.data == "help")
-async def callback_help(callback: CallbackQuery):
+@router.callback_query(F.data == "user_help")
+async def callback_user_help(callback: CallbackQuery):
     """Помощь (обработчик кнопки)"""
     await show_help(callback.message)
     await callback.answer()
@@ -310,15 +310,15 @@ async def show_help(message: Message):
 📌 <b>Как участвовать:</b>
 1. Подтвердите правила через бота
 2. Перейдите в канал P.I.T. Store Оренбург
-3. Нажимайте на кнопки под постами для ставок
+3. Нажимайте на кнопки под постами для ставки
 4. Следите за аукционами
 
 📌 <b>Правила:</b>
 • Ставка - обязательство купить
 • Оплата в течение 72 часов
-• Самовывоз
+• Самовывоз: г. Оренбург, ул. Монтажников 37/3
 • Вопросы к @pd56oren
-    """
+"""
     await message.answer(help_text, parse_mode="HTML")
 
 @router.callback_query(F.data == "confirm_rules")
@@ -335,13 +335,8 @@ async def confirm_rules(callback: CallbackQuery):
             
             await callback.message.edit_text(
                 "🎉 Отлично! Теперь вы можете участвовать в аукционах!\n\n"
-                "📢 Перейдите в канал(@PIT_Store_Orenburg) и нажимайте на кнопки под постами для участия.\n\n"
-                "📋 Ваши команды:\n"
-                "/auctions - Активные аукционы\n"
-                "/my_bids - Мои ставки\n"
-                "/my_wins - Мои выигрыши\n"
-                "/notifications - Уведомления\n"
-                "/help - Помощь",
+                "📢 Перейдите в канал и нажимайте на кнопки под постами для участия.\n\n"
+                "📋 Ваши команды:",
                 reply_markup=get_user_menu_keyboard()
             )
             await callback.answer("Правила подтверждены!")
@@ -357,14 +352,10 @@ async def cancel_rules(callback: CallbackQuery):
     )
     await callback.answer()
 
-@router.callback_query(F.data == "user_menu")
-async def user_menu(callback: CallbackQuery):
-    """Меню пользователя"""
-    await callback.message.edit_text(
-        "👤 Меню пользователя\n\n"
-        "Выберите действие:",
-        reply_markup=get_user_menu_keyboard()
-    )
+@router.callback_query(F.data == "cancel_bid_cancel")
+async def cancel_bid_cancel_handler(callback: CallbackQuery):
+    """Отмена отмены ставки"""
+    await callback.message.edit_text("✅ Отмена ставки отменена. Ваша ставка сохранена.")
     await callback.answer()
 
 @router.message(Command("cancel_bid"))
@@ -426,7 +417,7 @@ async def cmd_cancel_bid(message: Message):
         # Показываем подтверждение отмены
         await message.answer(
             f"⚠️ <b>Подтверждение отмены ставки</b>\n\n"
-            f"🏷 Аукцион: {escape_html(auction.title)}\n"  # Экранирование
+            f"🏷 Аукцион: {escape_html(auction.title)}\n"
             f"💰 Ваша ставка: {last_bid.amount} ₽\n"
             f"📅 Время ставки: {last_bid.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
             f"Вы уверены, что хотите отменить эту ставку?",
@@ -508,7 +499,7 @@ async def cancel_bid_confirm(callback: CallbackQuery):
         
         await callback.message.edit_text(
             "✅ <b>Ваша ставка успешно отменена!</b>\n\n"
-            f"🏷 Аукцион: {escape_html(bid.auction.title)}\n"  # Экранирование
+            f"🏷 Аукцион: {escape_html(bid.auction.title)}\n"
             f"💰 Сумма ставки: {bid.amount} ₽\n\n"
             f"Текущая цена аукциона обновлена.",
             parse_mode="HTML"
