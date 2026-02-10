@@ -9,7 +9,7 @@ import datetime
 from database.database import get_db
 from database.models import User, Bid, Auction, Notification
 from keyboards.inline import get_confirmation_keyboard, get_user_menu_keyboard, get_bot_auction_keyboard, get_cancel_bid_keyboard
-from utils.formatters import format_user_bids, format_notifications, escape_html  # ДОБАВЛЕНО escape_html
+from utils.formatters import format_user_bids, format_notifications, escape_html  # ИСПРАВЛЕННЫЙ ИМПОРТ
 from config import Config
 
 router = Router()
@@ -81,7 +81,7 @@ async def cmd_auctions(message: Message):
             result_bids = await session.execute(stmt_bids)
             bids_count = result_bids.scalar()
             
-            # Экранирование HTML - ИСПРАВЛЕНО
+            # Экранирование HTML - ИСПРАВЛЕНО (теперь импорт есть)
             title = escape_html(auction.title)
             description = escape_html(auction.description[:100] + "...") if auction.description else ""
             
