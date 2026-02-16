@@ -98,6 +98,7 @@ async def main():
     
     # Устанавливаем бота для менеджера таймеров
     auction_timer_manager.set_bot(bot)
+    asyncio.create_task(auction_timer_manager.periodic_check())
     
     # Инициализируем ChannelUpdater
     if CHANNEL_UPDATER_AVAILABLE:
