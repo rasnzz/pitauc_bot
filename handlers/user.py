@@ -15,6 +15,15 @@ from config import Config
 router = Router()
 logger = logging.getLogger(__name__)
 
+# ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ==========
+async def get_db_user(session, message):
+    """Получить пользователя из БД по telegram_id из сообщения"""
+    result = await session.execute(
+        select(User).where(User.telegram_id == message.from_user.id)
+    )
+    return result.scalar_one_or_none()
+# =============================================
+
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Обработка команды /start"""
@@ -131,22 +140,24 @@ async def confirm_rules(callback: CallbackQuery):
     logger.info(f"Подтверждение правил от {callback.from_user.id}")
     
     async with get_db() as session:
-        stmt = select(User).where(User.telegram_id == callback.from_user.id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        # Используем вспомогательную функцию для получения пользователя
+        db_user = await get_db_user(session, callback.message)
+        if not db_user:
+            await callback.message.answer("Пользователь не найден")
+            await callback.answer()
+            return
+        user_id = db_user.id
         
-        if user:
-            user.is_confirmed = True
-            await session.commit()
-            
-            await callback.message.edit_text(
-                "🎉 Отлично! Теперь вы можете участвовать в аукционах!\n\n"
-                "📢 Перейдите в канал и нажимайте на кнопки под постами для участия.",
-                reply_markup=get_user_menu_keyboard()
-            )
-            await callback.answer("Правила подтверждены!")
-        else:
-            await callback.answer("Ошибка: пользователь не найден", show_alert=True)
+        # Подтверждаем правила
+        db_user.is_confirmed = True
+        await session.commit()
+        
+        await callback.message.edit_text(
+            "🎉 Отлично! Теперь вы можете участвовать в аукционах!\n\n"
+            "📢 Перейдите в канал и нажимайте на кнопки под постами для участия.",
+            reply_markup=get_user_menu_keyboard()
+        )
+        await callback.answer("Правила подтверждены!")
 
 @router.callback_query(F.data == "cancel_rules")
 async def cancel_rules(callback: CallbackQuery):
@@ -179,7 +190,7 @@ async def cancel_bid_confirm(callback: CallbackQuery):
 # =================== ОБЩИЕ ФУНКЦИИ ===================
 
 async def show_auctions(message: Message):
-    """Показать активные аукционы"""
+    """Показать активные аукционы (не требует регистрации)"""
     async with get_db() as session:
         stmt = select(Auction).where(
             Auction.status == 'active'
@@ -237,28 +248,16 @@ async def show_auctions(message: Message):
 async def show_user_bids(message: Message):
     """Показать ставки пользователя"""
     async with get_db() as session:
-        # Находим пользователя по telegram_id
-        stmt_user = select(User).where(User.telegram_id == message.from_user.id)
-        result_user = await session.execute(stmt_user)
-        user = result_user.scalar_one_or_none()
-        
-        if not user:
-            # Создаем пользователя, если его нет
-            user = User(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-                is_confirmed=False
-            )
-            session.add(user)
-            await session.commit()
-            await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
+        # Получаем пользователя по telegram_id
+        db_user = await get_db_user(session, message)
+        if not db_user:
+            await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
+        user_id = db_user.id
         
-        # Находим ставки по user.id
+        # Находим ставки по user_id
         stmt = select(Bid).join(Auction).where(
-            Bid.user_id == user.id
+            Bid.user_id == user_id
         ).order_by(desc(Bid.created_at)).options(
             selectinload(Bid.auction)
         )
@@ -278,29 +277,17 @@ async def show_user_bids(message: Message):
 async def show_user_wins(message: Message):
     """Показать выигранные аукционы"""
     async with get_db() as session:
-        # Находим пользователя по telegram_id
-        stmt_user = select(User).where(User.telegram_id == message.from_user.id)
-        result_user = await session.execute(stmt_user)
-        user = result_user.scalar_one_or_none()
-        
-        if not user:
-            # Создаем пользователя, если его нет
-            user = User(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-                is_confirmed=False
-            )
-            session.add(user)
-            await session.commit()
-            await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
+        # Получаем пользователя по telegram_id
+        db_user = await get_db_user(session, message)
+        if not db_user:
+            await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
+        user_id = db_user.id
         
-        # Находим выигранные аукционы по user.id
+        # Находим выигранные аукционы по user_id
         stmt = select(Auction).where(
             Auction.status == 'ended',
-            Auction.winner_id == user.id
+            Auction.winner_id == user_id
         ).order_by(desc(Auction.ended_at))
         
         result = await session.execute(stmt)
@@ -322,27 +309,15 @@ async def show_user_wins(message: Message):
 async def show_user_notifications(message: Message):
     """Показать уведомления пользователя"""
     async with get_db() as session:
-        # Находим пользователя по telegram_id
-        stmt_user = select(User).where(User.telegram_id == message.from_user.id)
-        result_user = await session.execute(stmt_user)
-        user = result_user.scalar_one_or_none()
-        
-        if not user:
-            # Создаем пользователя, если его нет
-            user = User(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-                is_confirmed=False
-            )
-            session.add(user)
-            await session.commit()
-            await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
+        # Получаем пользователя по telegram_id
+        db_user = await get_db_user(session, message)
+        if not db_user:
+            await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
+        user_id = db_user.id
         
         stmt = select(Notification).where(
-            Notification.user_id == user.id
+            Notification.user_id == user_id
         ).order_by(desc(Notification.created_at)).limit(20)
         
         result = await session.execute(stmt)
@@ -394,28 +369,16 @@ async def show_help(message: Message):
 async def cancel_bid_start(message: Message):
     """Начало отмены ставки"""
     async with get_db() as session:
-        # Находим пользователя по telegram_id
-        stmt_user = select(User).where(User.telegram_id == message.from_user.id)
-        result_user = await session.execute(stmt_user)
-        user = result_user.scalar_one_or_none()
-        
-        if not user:
-            # Создаем пользователя, если его нет
-            user = User(
-                telegram_id=message.from_user.id,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-                is_confirmed=False
-            )
-            session.add(user)
-            await session.commit()
-            await message.answer("⚠️ Вы были автоматически зарегистрированы. Подтвердите правила через /start")
+        # Получаем пользователя по telegram_id
+        db_user = await get_db_user(session, message)
+        if not db_user:
+            await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
+        user_id = db_user.id
         
         # Находим последнюю ставку пользователя в активных аукционах
         stmt_last_bid = select(Bid).join(Auction).where(
-            Bid.user_id == user.id,
+            Bid.user_id == user_id,
             Auction.status == 'active'
         ).order_by(desc(Bid.created_at)).limit(1).options(
             selectinload(Bid.auction)
@@ -460,6 +423,14 @@ async def cancel_bid_start(message: Message):
 async def process_cancel_bid(callback: CallbackQuery, bid_id: int):
     """Обработка отмены ставки"""
     async with get_db() as session:
+        # Получаем пользователя из callback
+        db_user = await get_db_user(session, callback.message)
+        if not db_user:
+            await callback.message.answer("Пользователь не найден.")
+            await callback.answer()
+            return
+        user_id = db_user.id
+        
         async with session.begin():
             # Находим ставку
             stmt_bid = select(Bid).where(Bid.id == bid_id).options(
@@ -473,8 +444,8 @@ async def process_cancel_bid(callback: CallbackQuery, bid_id: int):
                 await callback.answer("Ставка не найдена!", show_alert=True)
                 return
             
-            # Проверяем, что пользователь отменяет свою ставку
-            if bid.user.telegram_id != callback.from_user.id:
+            # Проверяем, что пользователь отменяет свою ставку (сравниваем по user_id)
+            if bid.user_id != user_id:
                 await callback.answer("Это не ваша ставка!", show_alert=True)
                 return
             
