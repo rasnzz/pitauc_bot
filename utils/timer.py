@@ -520,18 +520,15 @@ class AuctionTimerManager:
             periodic_updater.clear_update_history()
             logger.info("Все таймеры остановлены")
     
-    # ========== ДОБАВЛЕННЫЙ МЕТОД (ПО ЗАДАНИЮ) ==========
+    # ========== ИСПРАВЛЕННЫЙ МЕТОД periodic_check ==========
     async def periodic_check(self):
-        while True:
+        """Периодическая проверка просроченных аукционов (запускается как фоновая задача)"""
+        while not self._stopping:
             try:
-                async with async_session() as session:
-                    result = await session.execute(select(Auction).where(auctions = result.scalars().now = datetime.now(timezone(None))), as_select=True)
-                    auctions = result.scalars().now = datetime.now(timezone(None))
-                    for auction in auctions:
-                        if auction.ends_at and not await self.complete():
-                except Exception as e:
-                    print("Periodic completion check failed")
-                await async.sleep(30)
+                await self.check_and_complete_expired_auctions()
+            except Exception as e:
+                logger.error(f"Periodic completion check failed: {e}")
+            await asyncio.sleep(30)
 
 # Глобальный экземпляр менеджера
 auction_timer_manager = AuctionTimerManager()
