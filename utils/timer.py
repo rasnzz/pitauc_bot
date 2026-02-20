@@ -8,7 +8,7 @@ import json
 
 from database.database import get_db
 from database.models import Auction, User, Bid
-from utils.formatters import format_ended_auction_message  # ИСПРАВЛЕННЫЙ ИМПОРТ
+from utils.formatters import format_ended_auction_message
 from utils.periodic_updater import periodic_updater
 from utils.notifications import send_winner_notification
 from config import Config
@@ -16,7 +16,7 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 class AuctionTimerManager:
-    """Менеджер таймеров для аукционов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Менеджер таймеров для аукционов"""
     
     def __init__(self):
         self.active_timers: Dict[int, asyncio.Task] = {}
@@ -155,23 +155,20 @@ class AuctionTimerManager:
             async with get_db() as session:
                 stmt_top_bids = select(Bid).where(
                     Bid.auction_id == auction.id
-                ).order_by(desc(Bid.amount)).limit(3)
+                ).order_by(desc(Bid.amount)).limit(3).options(
+                    selectinload(Bid.user)
+                )
                 result_top = await session.execute(stmt_top_bids)
                 top_bids = result_top.scalars().all()
                 
                 # Подготавливаем данные топ ставок
                 prepared_top_bids = []
                 for bid in top_bids:
-                    stmt_user = select(User).where(User.id == bid.user_id)
-                    result_user = await session.execute(stmt_user)
-                    user = result_user.scalar_one_or_none()
-                    
-                    if user:
-                        prepared_top_bids.append({
-                            'amount': bid.amount,
-                            'created_at': bid.created_at,
-                            'user': user
-                        })
+                    prepared_top_bids.append({
+                        'amount': bid.amount,
+                        'created_at': bid.created_at,
+                        'user': bid.user
+                    })
                 
                 stmt_count = select(Bid).where(Bid.auction_id == auction.id)
                 result_count = await session.execute(stmt_count)
@@ -239,7 +236,7 @@ class AuctionTimerManager:
                 periodic_updater.clear_update_history(auction_id)
     
     async def _end_auction(self, auction_id: int):
-        """Завершение аукциона"""
+        """Завершение аукциона (ИСПРАВЛЕНО: добавлена загрузка winner)"""
         try:
             logger.info(f"Начинаю завершение аукциона #{auction_id}")
             
@@ -249,11 +246,11 @@ class AuctionTimerManager:
             
             # Используем одну сессию для всей операции
             async with get_db() as session:
-                # Получаем аукцион с блокировкой для обновления
+                # Получаем аукцион с блокировкой для обновления и загружаем winner
                 stmt = select(Auction).where(
                     Auction.id == auction_id,
                     Auction.status == 'active'
-                ).with_for_update()
+                ).options(selectinload(Auction.winner)).with_for_update()
                 
                 result = await session.execute(stmt)
                 auction = result.scalar_one_or_none()
@@ -283,33 +280,30 @@ class AuctionTimerManager:
                 # Получаем топ-3 ставки и количество ставок в той же сессии
                 stmt_top_bids = select(Bid).where(
                     Bid.auction_id == auction_id
-                ).order_by(desc(Bid.amount)).limit(3)
+                ).order_by(desc(Bid.amount)).limit(3).options(
+                    selectinload(Bid.user)
+                )
                 result_top = await session.execute(stmt_top_bids)
                 top_bids = result_top.scalars().all()
                 
                 # Подготавливаем данные топ ставок
                 prepared_top_bids = []
                 for bid in top_bids:
-                    stmt_user = select(User).where(User.id == bid.user_id)
-                    result_user = await session.execute(stmt_user)
-                    user = result_user.scalar_one_or_none()
-                    
-                    if user:
-                        prepared_top_bids.append({
-                            'amount': bid.amount,
-                            'created_at': bid.created_at,
-                            'user': user
-                        })
+                    prepared_top_bids.append({
+                        'amount': bid.amount,
+                        'created_at': bid.created_at,
+                        'user': bid.user
+                    })
                 
                 # Получаем количество ставок
                 stmt_count = select(Bid).where(Bid.auction_id == auction_id)
                 result_count = await session.execute(stmt_count)
                 bids_count = result_count.scalar()
                 
-                # Коммитим изменения
+                # Коммитим изменения (после коммита auction станет detached, но winner и другие поля уже загружены)
                 await session.commit()
                 
-                # Обновляем сообщение в канале (ИСПРАВЛЕНО: вызываем исправленный метод)
+                # Обновляем сообщение в канале
                 await self._update_channel_message(auction, prepared_top_bids, bids_count)
             
             # Уведомляем победителя, если есть
@@ -322,7 +316,7 @@ class AuctionTimerManager:
             logger.error(f"Ошибка при завершении аукциона #{auction_id}: {e}", exc_info=True)
     
     async def _update_channel_message(self, auction: Auction, top_bids=None, bids_count=0):
-        """Обновление сообщения в канале после завершения аукциона (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
+        """Обновление сообщения в канале после завершения аукциона"""
         try:
             logger.info(f"🔄 Начинаю обновление сообщения для аукциона #{auction.id}")
             
@@ -336,18 +330,15 @@ class AuctionTimerManager:
             
             logger.info(f"📝 Обновляю сообщение в канале: ID={Config.CHANNEL_ID}, message_id={auction.channel_message_id}")
             
-            # Получаем данные для сообщения (ИСПРАВЛЕНО: импорт уже есть в начале файла)
+            # Получаем данные для сообщения
             message_text = format_ended_auction_message(auction, top_bids, bids_count)
             
             # ОБРЕЗАЕМ сообщение если слишком длинное
             if len(message_text) > 1024:
                 logger.warning(f"⚠️ Сообщение слишком длинное ({len(message_text)} символов), обрезаю...")
-                # Находим последний закрывающий тег перед 1024 символами
                 import re
                 truncated = message_text[:1024]
-                # Закрываем незакрытые HTML теги
                 open_tags = re.findall(r'<([^/][^>]*)>', truncated)
-                close_tags = re.findall(r'</([^>]+)>', truncated)
                 
                 tags_to_close = []
                 for tag in open_tags:
@@ -355,7 +346,6 @@ class AuctionTimerManager:
                     if f'</{tag_name}>' not in truncated:
                         tags_to_close.append(tag_name)
                 
-                # Закрываем теги в обратном порядке
                 for tag in reversed(tags_to_close):
                     truncated += f'</{tag}>'
                 
@@ -365,7 +355,6 @@ class AuctionTimerManager:
             logger.info(f"✅ Сообщение подготовлено, длина: {len(message_text)} символов")
             
             # Пытаемся определить тип сообщения (фото или текст)
-            # Пробуем сначала получить само сообщение
             try:
                 original_message = await self.bot.get_message(
                     chat_id=Config.CHANNEL_ID,
@@ -392,7 +381,6 @@ class AuctionTimerManager:
                     logger.info(f"🔄 Попытка {attempt + 1} из {max_retries}")
                     
                     if has_photo:
-                        # Пробуем обновить подпись к фото
                         await self.bot.edit_message_caption(
                             chat_id=Config.CHANNEL_ID,
                             message_id=auction.channel_message_id,
@@ -401,7 +389,6 @@ class AuctionTimerManager:
                         )
                         logger.info(f"✅ Обновлена подпись к фото для аукциона #{auction.id}")
                     else:
-                        # Обновляем текстовое сообщение
                         await self.bot.edit_message_text(
                             chat_id=Config.CHANNEL_ID,
                             message_id=auction.channel_message_id,
@@ -410,18 +397,16 @@ class AuctionTimerManager:
                         )
                         logger.info(f"✅ Обновлен текст для аукциона #{auction.id}")
                     
-                    break  # Успешно
+                    break
                     
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"❌ Попытка {attempt + 1} не удалась: {error_msg}")
                     
-                    # Если первая попытка не удалась, меняем метод (фото/текст)
                     if attempt == 0:
                         logger.info(f"🔄 Меняю метод (было {'фото' if has_photo else 'текст'})")
                         has_photo = not has_photo
                     elif attempt == 1:
-                        # Вторая попытка тоже не удалась, пробуем удалить клавиатуру если есть
                         logger.info("🔄 Пробую обновить без клавиатуры...")
                         try:
                             await self.bot.edit_message_text(
@@ -429,14 +414,13 @@ class AuctionTimerManager:
                                 message_id=auction.channel_message_id,
                                 text=message_text,
                                 parse_mode='HTML',
-                                reply_markup=None  # Убираем клавиатуру
+                                reply_markup=None
                             )
                             logger.info(f"✅ Обновлено без клавиатуры")
                             break
                         except Exception as e2:
                             logger.error(f"❌ Не удалось обновить без клавиатуры: {e2}")
                     
-                    # Ждем перед следующей попыткой
                     if attempt < max_retries - 1:
                         wait_time = 2 ** (attempt + 1)
                         logger.info(f"⏳ Жду {wait_time} секунд...")
@@ -451,7 +435,7 @@ class AuctionTimerManager:
         """Уведомление победителя"""
         try:
             async with get_db() as session:
-                stmt = select(Auction).where(Auction.id == auction_id)
+                stmt = select(Auction).where(Auction.id == auction_id).options(selectinload(Auction.winner))
                 result = await session.execute(stmt)
                 auction = result.scalar_one_or_none()
                 
@@ -481,7 +465,6 @@ class AuctionTimerManager:
             async with get_db() as session:
                 now = datetime.utcnow()
                 
-                # Ищем активные аукционы, у которых время завершения прошло
                 stmt = select(Auction).where(
                     Auction.status == 'active',
                     Auction.ends_at <= now
@@ -520,7 +503,6 @@ class AuctionTimerManager:
             periodic_updater.clear_update_history()
             logger.info("Все таймеры остановлены")
     
-    # ========== ИСПРАВЛЕННЫЙ МЕТОД periodic_check ==========
     async def periodic_check(self):
         """Периодическая проверка просроченных аукционов (запускается как фоновая задача)"""
         while not self._stopping:
@@ -530,5 +512,4 @@ class AuctionTimerManager:
                 logger.error(f"Periodic completion check failed: {e}")
             await asyncio.sleep(30)
 
-# Глобальный экземпляр менеджера
 auction_timer_manager = AuctionTimerManager()
