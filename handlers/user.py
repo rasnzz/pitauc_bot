@@ -16,10 +16,10 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 # ========== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ==========
-async def get_db_user(session, message):
-    """Получить пользователя из БД по telegram_id из сообщения"""
+async def get_db_user(session, telegram_id: int):
+    """Получить пользователя из БД по telegram_id"""
     result = await session.execute(
-        select(User).where(User.telegram_id == message.from_user.id)
+        select(User).where(User.telegram_id == telegram_id)
     )
     return result.scalar_one_or_none()
 # =============================================
@@ -30,10 +30,7 @@ async def cmd_start(message: Message):
     logger.info(f"Команда /start от {message.from_user.id}")
     
     async with get_db() as session:
-        # Проверяем, есть ли пользователь в базе
-        stmt = select(User).where(User.telegram_id == message.from_user.id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        user = await get_db_user(session, message.from_user.id)
         
         if not user:
             # Создаем нового пользователя
@@ -82,17 +79,17 @@ async def cmd_auctions(message: Message):
 @router.message(Command("my_bids"))
 async def cmd_my_bids(message: Message):
     """Показать все ставки пользователя"""
-    await show_user_bids(message)
+    await show_user_bids(message, message.from_user.id)
 
 @router.message(Command("my_wins"))
 async def cmd_my_wins(message: Message):
     """Показать выигранные аукционы"""
-    await show_user_wins(message)
+    await show_user_wins(message, message.from_user.id)
 
 @router.message(Command("notifications"))
 async def cmd_notifications(message: Message):
     """Показать уведомления пользователя"""
-    await show_user_notifications(message)
+    await show_user_notifications(message, message.from_user.id)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -110,21 +107,21 @@ async def cmd_cancel_bid(message: Message):
 async def callback_user_my_bids(callback: CallbackQuery):
     """Мои ставки (обработчик кнопки)"""
     logger.info(f"Нажата кнопка 'Мои ставки' от {callback.from_user.id}")
-    await show_user_bids(callback.message)
+    await show_user_bids(callback.message, callback.from_user.id)
     await callback.answer()
 
 @router.callback_query(F.data == "user_my_wins")
 async def callback_user_my_wins(callback: CallbackQuery):
     """Мои выигрыши (обработчик кнопки)"""
     logger.info(f"Нажата кнопка 'Мои выигрыши' от {callback.from_user.id}")
-    await show_user_wins(callback.message)
+    await show_user_wins(callback.message, callback.from_user.id)
     await callback.answer()
 
 @router.callback_query(F.data == "user_notifications")
 async def callback_user_notifications(callback: CallbackQuery):
     """Уведомления (обработчик кнопки)"""
     logger.info(f"Нажата кнопка 'Уведомления' от {callback.from_user.id}")
-    await show_user_notifications(callback.message)
+    await show_user_notifications(callback.message, callback.from_user.id)
     await callback.answer()
 
 @router.callback_query(F.data == "user_help")
@@ -140,15 +137,12 @@ async def confirm_rules(callback: CallbackQuery):
     logger.info(f"Подтверждение правил от {callback.from_user.id}")
     
     async with get_db() as session:
-        # Используем вспомогательную функцию для получения пользователя
-        db_user = await get_db_user(session, callback.message)
+        db_user = await get_db_user(session, callback.from_user.id)
         if not db_user:
             await callback.message.answer("Пользователь не найден")
             await callback.answer()
             return
-        user_id = db_user.id
         
-        # Подтверждаем правила
         db_user.is_confirmed = True
         await session.commit()
         
@@ -245,19 +239,19 @@ async def show_auctions(message: Message):
                     reply_markup=get_bot_auction_keyboard(auction.id, next_bid_amount)
                 )
 
-async def show_user_bids(message: Message):
+async def show_user_bids(message: Message, user_id: int = None):
     """Показать ставки пользователя"""
+    if user_id is None:
+        user_id = message.from_user.id
+    
     async with get_db() as session:
-        # Получаем пользователя по telegram_id
-        db_user = await get_db_user(session, message)
+        db_user = await get_db_user(session, user_id)
         if not db_user:
             await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
-        user_id = db_user.id
         
-        # Находим ставки по user_id
         stmt = select(Bid).join(Auction).where(
-            Bid.user_id == user_id
+            Bid.user_id == db_user.id
         ).order_by(desc(Bid.created_at)).options(
             selectinload(Bid.auction)
         )
@@ -274,20 +268,20 @@ async def show_user_bids(message: Message):
             parse_mode="HTML"
         )
 
-async def show_user_wins(message: Message):
+async def show_user_wins(message: Message, user_id: int = None):
     """Показать выигранные аукционы"""
+    if user_id is None:
+        user_id = message.from_user.id
+    
     async with get_db() as session:
-        # Получаем пользователя по telegram_id
-        db_user = await get_db_user(session, message)
+        db_user = await get_db_user(session, user_id)
         if not db_user:
             await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
-        user_id = db_user.id
         
-        # Находим выигранные аукционы по user_id
         stmt = select(Auction).where(
             Auction.status == 'ended',
-            Auction.winner_id == user_id
+            Auction.winner_id == db_user.id
         ).order_by(desc(Auction.ended_at))
         
         result = await session.execute(stmt)
@@ -306,18 +300,19 @@ async def show_user_wins(message: Message):
         
         await message.answer(wins_text, parse_mode="HTML")
 
-async def show_user_notifications(message: Message):
+async def show_user_notifications(message: Message, user_id: int = None):
     """Показать уведомления пользователя"""
+    if user_id is None:
+        user_id = message.from_user.id
+    
     async with get_db() as session:
-        # Получаем пользователя по telegram_id
-        db_user = await get_db_user(session, message)
+        db_user = await get_db_user(session, user_id)
         if not db_user:
             await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
-        user_id = db_user.id
         
         stmt = select(Notification).where(
-            Notification.user_id == user_id
+            Notification.user_id == db_user.id
         ).order_by(desc(Notification.created_at)).limit(20)
         
         result = await session.execute(stmt)
@@ -369,16 +364,14 @@ async def show_help(message: Message):
 async def cancel_bid_start(message: Message):
     """Начало отмены ставки"""
     async with get_db() as session:
-        # Получаем пользователя по telegram_id
-        db_user = await get_db_user(session, message)
+        db_user = await get_db_user(session, message.from_user.id)
         if not db_user:
             await message.answer("Пользователь не найден. Напишите /start для регистрации.")
             return
-        user_id = db_user.id
         
         # Находим последнюю ставку пользователя в активных аукционах
         stmt_last_bid = select(Bid).join(Auction).where(
-            Bid.user_id == user_id,
+            Bid.user_id == db_user.id,
             Auction.status == 'active'
         ).order_by(desc(Bid.created_at)).limit(1).options(
             selectinload(Bid.auction)
@@ -423,13 +416,11 @@ async def cancel_bid_start(message: Message):
 async def process_cancel_bid(callback: CallbackQuery, bid_id: int):
     """Обработка отмены ставки"""
     async with get_db() as session:
-        # Получаем пользователя из callback
-        db_user = await get_db_user(session, callback.message)
+        db_user = await get_db_user(session, callback.from_user.id)
         if not db_user:
             await callback.message.answer("Пользователь не найден.")
             await callback.answer()
             return
-        user_id = db_user.id
         
         async with session.begin():
             # Находим ставку
@@ -444,12 +435,10 @@ async def process_cancel_bid(callback: CallbackQuery, bid_id: int):
                 await callback.answer("Ставка не найдена!", show_alert=True)
                 return
             
-            # Проверяем, что пользователь отменяет свою ставку (сравниваем по user_id)
-            if bid.user_id != user_id:
+            if bid.user_id != db_user.id:
                 await callback.answer("Это не ваша ставка!", show_alert=True)
                 return
             
-            # Проверяем, что аукцион активен
             if bid.auction.status != 'active':
                 await callback.answer("Аукцион уже завершен!", show_alert=True)
                 return
