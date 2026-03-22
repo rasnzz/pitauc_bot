@@ -4,10 +4,11 @@
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 
 from sqlalchemy import select, desc, func
+from sqlalchemy.orm import selectinload
 
 from database.database import get_db
 from database.models import Auction, Bid, User
@@ -35,7 +36,6 @@ class ChannelUpdater:
             logger.info("🔄 Начинаю обновление ВСЕХ сообщений в канале...")
             
             async with get_db() as session:
-                # Получаем ВСЕ аукционы с сообщениями в канале
                 stmt = select(Auction).where(
                     Auction.channel_message_id.isnot(None)
                 ).order_by(Auction.created_at.desc())
@@ -54,26 +54,23 @@ class ChannelUpdater:
                 
                 for i, auction in enumerate(auctions, 1):
                     try:
-                        # Получаем данные для сообщения
+                        # Получаем топ-3 ставки с пользователями
                         stmt_top_bids = select(Bid).where(
                             Bid.auction_id == auction.id
-                        ).order_by(desc(Bid.amount)).limit(3)
+                        ).order_by(desc(Bid.amount)).limit(3).options(
+                            selectinload(Bid.user)
+                        )
                         result_top = await session.execute(stmt_top_bids)
                         top_bids = result_top.scalars().all()
                         
                         # Подготавливаем данные топ ставок
                         prepared_top_bids = []
                         for bid in top_bids:
-                            stmt_user = select(User).where(User.id == bid.user_id)
-                            result_user = await session.execute(stmt_user)
-                            user = result_user.scalar_one_or_none()
-                            
-                            if user:
-                                prepared_top_bids.append({
-                                    'amount': bid.amount,
-                                    'created_at': bid.created_at,
-                                    'user': user
-                                })
+                            prepared_top_bids.append({
+                                'amount': bid.amount,
+                                'created_at': bid.created_at,
+                                'user': bid.user
+                            })
                         
                         # Получаем количество ставок
                         stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
@@ -86,9 +83,9 @@ class ChannelUpdater:
                         updated_count += 1
                         logger.info(f"✅ Обновлен аукцион #{auction.id} ({i}/{len(auctions)})")
                         
-                        # Задержка между обновлениями (1-2 секунды)
+                        # Задержка между обновлениями
                         if i < len(auctions):
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(2)
                             
                     except Exception as e:
                         error_count += 1
@@ -109,7 +106,6 @@ class ChannelUpdater:
             async with get_db() as session:
                 now = datetime.utcnow()
                 
-                # Ищем активные аукционы с истекшим временем
                 stmt = select(Auction).where(
                     Auction.status == 'active',
                     Auction.ends_at <= now,
@@ -144,25 +140,22 @@ class ChannelUpdater:
                             auction.winner_id = winning_bid.user_id
                             auction.current_price = winning_bid.amount
                         
-                        # Получаем данные для обновления
+                        # Получаем топ-3 ставки
                         stmt_top_bids = select(Bid).where(
                             Bid.auction_id == auction.id
-                        ).order_by(desc(Bid.amount)).limit(3)
+                        ).order_by(desc(Bid.amount)).limit(3).options(
+                            selectinload(Bid.user)
+                        )
                         result_top = await session.execute(stmt_top_bids)
                         top_bids = result_top.scalars().all()
                         
                         prepared_top_bids = []
                         for bid in top_bids:
-                            stmt_user = select(User).where(User.id == bid.user_id)
-                            result_user = await session.execute(stmt_user)
-                            user = result_user.scalar_one_or_none()
-                            
-                            if user:
-                                prepared_top_bids.append({
-                                    'amount': bid.amount,
-                                    'created_at': bid.created_at,
-                                    'user': user
-                                })
+                            prepared_top_bids.append({
+                                'amount': bid.amount,
+                                'created_at': bid.created_at,
+                                'user': bid.user
+                            })
                         
                         stmt_count = select(func.count(Bid.id)).where(Bid.auction_id == auction.id)
                         result_count = await session.execute(stmt_count)
@@ -175,8 +168,6 @@ class ChannelUpdater:
                         updated_count += 1
                         
                         logger.info(f"✅ Завершен и обновлен аукцион #{auction.id}")
-                        
-                        # Задержка
                         await asyncio.sleep(1)
                         
                     except Exception as e:
@@ -216,12 +207,12 @@ class ChannelUpdater:
                 logger.error(f"❌ Ошибка при проверке фото: {e}")
             
             # Пытаемся обновить сообщение
-            max_retries = 2
+            max_retries = 3
             for attempt in range(max_retries):
                 try:
                     if has_photo:
                         if auction.status == 'ended' or keyboard is None:
-                            # Завершенный аукцион или без клавиатуры
+                            # Обновляем подпись к фото без клавиатуры
                             await self.bot.edit_message_caption(
                                 chat_id=Config.CHANNEL_ID,
                                 message_id=auction.channel_message_id,
@@ -229,7 +220,7 @@ class ChannelUpdater:
                                 parse_mode='HTML'
                             )
                         else:
-                            # Активный аукцион с клавиатурой
+                            # Обновляем подпись к фото с клавиатурой
                             await self.bot.edit_message_caption(
                                 chat_id=Config.CHANNEL_ID,
                                 message_id=auction.channel_message_id,
@@ -239,6 +230,7 @@ class ChannelUpdater:
                             )
                     else:
                         if auction.status == 'ended' or keyboard is None:
+                            # Обновляем текст без клавиатуры
                             await self.bot.edit_message_text(
                                 chat_id=Config.CHANNEL_ID,
                                 message_id=auction.channel_message_id,
@@ -246,6 +238,7 @@ class ChannelUpdater:
                                 parse_mode='HTML'
                             )
                         else:
+                            # Обновляем текст с клавиатурой
                             await self.bot.edit_message_text(
                                 chat_id=Config.CHANNEL_ID,
                                 message_id=auction.channel_message_id,
@@ -258,11 +251,12 @@ class ChannelUpdater:
                     
                 except Exception as e:
                     error_msg = str(e)
-                    logger.warning(f"❌ Попытка {attempt + 1} не удалась: {error_msg}")
+                    logger.warning(f"❌ Попытка {attempt + 1}/{max_retries} не удалась: {error_msg}")
                     
-                    # Пробуем другой метод (фото/текст)
-                    if attempt == 0:
-                        has_photo = not has_photo
+                    if attempt < max_retries - 1:
+                        # Экспоненциальная задержка
+                        delay = 2 ** (attempt + 1)
+                        await asyncio.sleep(delay)
                     else:
                         logger.error(f"❌ Не удалось обновить сообщение #{auction.channel_message_id} для аукциона #{auction.id}")
                         return False
@@ -278,10 +272,7 @@ class ChannelUpdater:
         logger.info("🔍 Начинаю проверку всех сообщений...")
         
         try:
-            # Сначала обновляем просроченные
             expired_count = await self.update_expired_messages()
-            
-            # Затем обновляем все остальные
             await self.update_all_channel_messages()
             
             logger.info(f"✅ Проверка завершена. Исправлено {expired_count} просроченных аукционов.")
