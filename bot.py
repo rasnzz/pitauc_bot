@@ -4,8 +4,9 @@ import uvloop
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientTimeout
 from aiohttp_socks import ProxyConnector
 
 from config import Config
@@ -86,8 +87,11 @@ async def create_bot():
             # Создаём прокси-коннектор
             connector = ProxyConnector.from_url(Config.PROXY_URL)
             
-            # Создаём сессию с коннектором
-            session = ClientSession(connector=connector, timeout=timeout)
+            # Создаём сессию aiohttp
+            session = AiohttpSession(
+                connector=connector,
+                timeout=timeout
+            )
             
             # Создаём бота с сессией
             bot = Bot(
@@ -111,9 +115,7 @@ async def create_bot():
             logger.error(f"❌ Ошибка настройки прокси: {e}, пробую без прокси")
     
     # Без прокси
-    timeout = ClientTimeout(total=60, connect=30, sock_read=30)
-    session = ClientSession(timeout=timeout)
-    
+    session = AiohttpSession()
     bot = Bot(
         token=Config.BOT_TOKEN,
         session=session,
