@@ -6,14 +6,8 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
-
-# Для SOCKS5 прокси нужен дополнительный модуль
-try:
-    from aiohttp_socks import ProxyConnector
-    PROXY_AVAILABLE = True
-except ImportError:
-    PROXY_AVAILABLE = False
-    logging.warning("aiohttp_socks не установлен. Установите: pip install aiohttp-socks")
+from aiohttp_socks import ProxyConnector
+import sys
 
 from config import Config
 from database.database import init_db
@@ -79,11 +73,19 @@ async def create_bot():
     """Создание бота с поддержкой прокси"""
     connector = None
     
-    if Config.PROXY_URL and PROXY_AVAILABLE:
+    if Config.PROXY_URL:
         try:
             logger.info(f"Используется прокси: {Config.PROXY_URL.split('@')[-1] if '@' in Config.PROXY_URL else Config.PROXY_URL}")
+            
+            # Увеличенные таймауты для медленного прокси
+            timeout = ClientTimeout(
+                total=120,      # общий таймаут 120 секунд
+                connect=60,     # таймаут подключения 60 секунд
+                sock_read=60,   # таймаут чтения 60 секунд
+                sock_connect=60 # таймаут сокета 60 секунд
+            )
+            
             connector = ProxyConnector.from_url(Config.PROXY_URL)
-            timeout = ClientTimeout(total=60, connect=30, sock_read=30)
             session = ClientSession(connector=connector, timeout=timeout)
             
             bot = Bot(
@@ -91,14 +93,28 @@ async def create_bot():
                 session=session,
                 default=DefaultBotProperties(parse_mode=ParseMode.HTML)
             )
-            logger.info("✅ Бот настроен через SOCKS5 прокси")
+            
+            # Проверяем соединение
+            try:
+                me = await bot.get_me()
+                logger.info(f"✅ Бот настроен через прокси, @{me.username}")
+            except Exception as e:
+                logger.error(f"❌ Проверка прокси не удалась: {e}")
+                await session.close()
+                raise
+            
             return bot
+            
         except Exception as e:
             logger.error(f"❌ Ошибка настройки прокси: {e}, пробую без прокси")
     
     # Без прокси или если прокси недоступен
+    timeout = ClientTimeout(total=60, connect=30, sock_read=30)
+    session = ClientSession(timeout=timeout)
+    
     bot = Bot(
         token=Config.BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     logger.info("✅ Бот запущен без прокси")
