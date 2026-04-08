@@ -32,35 +32,6 @@
 - uvloop – высокопроизводительный event loop
 - aiohttp + aiohttp-socks – поддержка прокси
 
-## 📂 Структура проекта
-pitauc_bot/
-├── bot.py # Точка входа
-├── config.py # Конфигурация (читает .env)
-├── auctions.db # База данных SQLite
-├── requirements.txt
-├── .env # Переменные окружения (токен, админы, прокси)
-├── backups/ # Автоматические бэкапы
-├── database/
-│ ├── database.py # Инициализация и сессии БД
-│ └── models.py # SQLAlchemy модели
-├── handlers/
-│ ├── user.py # Пользовательские команды
-│ ├── admin.py # Админ-команды
-│ └── auction.py # Логика ставок и подписок
-├── keyboards/
-│ └── inline.py # Инлайн-клавиатуры
-├── middlewares/
-│ ├── rate_limit.py # Ограничение частоты
-│ └── user_check.py # Авторегистрация пользователей
-└── utils/
-├── formatters.py # Форматирование сообщений
-├── notifications.py # Уведомления
-├── timer.py # Таймеры аукционов
-├── periodic_updater.py# Периодическое обновление канала
-├── channel_updater.py # Массовое обновление сообщений
-├── backup.py # Резервное копирование
-└── validators.py # Валидация ввода
-
 ## 🚀 Установка и запуск
 
 ### 1. Клонирование
